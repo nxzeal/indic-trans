@@ -1,0 +1,15 @@
+pairs:
+  - pair: "hi-en"
+    src: "data/raw/hi_en.tsv"
+  - pair: "ta-en"
+    src: "data/raw/ta_en.tsv"
+  - pair: "te-en"
+    src: "data/raw/te_en.tsv"
+  - pair: "ml-en"
+    src: "data/raw/ml_en.tsv"
+options:
+  normalize_unicode: true
+  dedupe: true
+  max_len: 256
+  min_len: 3
+  synthetic_cap_ratio: 0.05

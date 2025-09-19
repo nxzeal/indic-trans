@@ -1,0 +1,34 @@
+base_model: "ai4bharat/indictrans2-en-indic-1B"
+pairs: ["ml-en","en-ml"]
+data_dir: "data/clean/ml_en"
+output_dir: "outputs/ml_en_r16"
+seed: 42
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: ["q_proj","v_proj","k_proj","o_proj"]
+
+quantization:
+  load_in_4bit: true
+  bnb_4bit_use_double_quant: true
+  bnb_4bit_quant_type: "nf4"
+  bnb_4bit_compute_dtype: "float16"
+
+train:
+  lr: 2.0e-4
+  batch_size: 64
+  grad_accum: 4
+  max_steps: 12000
+  warmup_ratio: 0.03
+  eval_every: 500
+  save_every: 1000
+  gradient_checkpointing: true
+  fp16: true
+
+task:
+  tags:
+    style: ["formal","informal"]
+    simplify: ["yes","no"]
+  prompt_template: "<SRC_LANG> <TGT_LANG> <STYLE> <SIMPLIFY> ||| <TEXT>"

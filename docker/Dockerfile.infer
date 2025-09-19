@@ -1,0 +1,21 @@
+FROM python:3.10-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \\
+    PYTHONUNBUFFERED=1 \\
+    HF_HOME=/app/.cache/huggingface \\
+    TRANSFORMERS_CACHE=/app/.cache/huggingface
+
+WORKDIR /app
+
+COPY requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir fastapi uvicorn[standard] transformers accelerate sacrebleu textstat peft mlflow python-dotenv jinja2 pandas numpy pyyaml
+
+COPY demo ./demo
+COPY scripts ./scripts
+
+EXPOSE 8080
+VOLUME ["/app/outputs"]
+
+CMD ["uvicorn", "demo.app:app", "--host", "0.0.0.0", "--port", "8080"]

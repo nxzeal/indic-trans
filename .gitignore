@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.so
+*.dll
+*.log
+.venv/
+.env
+.env.*
+mlruns/
+outputs/
+artifacts/review2/screenshots/*
+!artifacts/review2/screenshots/.gitkeep
+# Data artifacts
+data/raw/*
+!data/raw/.gitkeep
+data/clean/*/*.tsv
+!data/clean/**/.gitkeep
+data/clean/*/stats.json
+# Large artifacts not tracked by default
+artifacts/full/*
+!artifacts/full/.gitkeep
+# Model weights
+*.pt
+*.bin
+*.safetensors

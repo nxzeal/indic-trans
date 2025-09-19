@@ -1,0 +1,4 @@
+pairs: ["hi-en","ta-en","te-en","ml-en"]
+test_glob: "data/clean/{pair}/test.tsv"
+pred_glob: "outputs/{pair_id}/preds_test.txt"  # pair_id set per run
+out_dir: "artifacts/review2"

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>IndicTrans LoRA Demo</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main>
+    <h1>IndicTrans LoRA Demo</h1>
+    <p class="tagline">Focused Review-2 demo – Hindi?English and Tamil?English adapters</p>
+    {% if error %}
+      <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="/infer">
+      <div class="field">
+        <label for="pair">Language pair</label>
+        <select id="pair" name="pair">
+          {% for key, cfg in pairs.items() %}
+            <option value="{{ key }}" {% if selected_pair == key %}selected{% endif %}>{{ cfg.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field-group">
+        <div class="field">
+          <label for="style">Target style</label>
+          <select id="style" name="style">
+            <option value="formal" {% if selected_style == 'formal' %}selected{% endif %}>Formal</option>
+            <option value="informal" {% if selected_style == 'informal' %}selected{% endif %}>Informal</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="simplify">Simplify?</label>
+          <select id="simplify" name="simplify">
+            <option value="no" {% if selected_simplify == 'no' %}selected{% endif %}>No</option>
+            <option value="yes" {% if selected_simplify == 'yes' %}selected{% endif %}>Yes</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="max_new_tokens">Max output tokens</label>
+          <input type="number" id="max_new_tokens" name="max_new_tokens" value="{{ max_new_tokens or 128 }}" min="16" max="512" />
+        </div>
+      </div>
+      <div class="field">
+        <label for="text">Input text</label>
+        <textarea id="text" name="text" rows="6" placeholder="Enter text to translate or simplify">{{ input_text or '' }}</textarea>
+      </div>
+      <button type="submit">Generate</button>
+    </form>
+
+    {% if result %}
+      <section class="result">
+        <h2>Output</h2>
+        <p><strong>Pair:</strong> {{ result.pair }} &nbsp; <strong>Style:</strong> {{ result.style }} &nbsp; <strong>Simplify:</strong> {{ result.simplify }}</p>
+        <div class="prompt">
+          <h3>Prompt</h3>
+          <pre>{{ result.prompt }}</pre>
+        </div>
+        <div class="generated">
+          <h3>Generation</h3>
+          <pre>{{ result.generated }}</pre>
+        </div>
+      </section>
+    {% endif %}
+  </main>
+</body>
+</html>
