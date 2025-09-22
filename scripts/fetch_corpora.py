@@ -4,10 +4,11 @@ import json
 import random
 import re
 import unicodedata
-from collections import Counter
+from collections import Counter, deque
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Generator, List, Optional, Sequence, Tuple
 
 from datasets import get_dataset_config_names, load_dataset
 from tqdm.auto import tqdm
@@ -45,6 +46,9 @@ DEFAULT_STYLE = {
     "simplify": "no",
 }
 
+DEDUP_CACHE_LIMIT = 5_000_000
+SHUFFLE_BUFFER_SIZE = 10_000
+
 
 @dataclass
 class Mapping:
@@ -65,6 +69,23 @@ def normalize_text(text: Any) -> str:
     text = unicodedata.normalize("NFC", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
+
+
+@contextmanager
+def atomic_tsv_writer(path: Path, fieldnames: Sequence[str]) -> Generator[csv.DictWriter, None, None]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, delimiter="\t", fieldnames=fieldnames)
+            writer.writeheader()
+            yield writer
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
+    else:
+        tmp_path.replace(path)
 
 
 def _score_column(name: str, aliases: Sequence[str], extra_hits: Sequence[str] | None = None) -> int:
@@ -109,6 +130,9 @@ def detect_language_columns(features: Dict[str, Any], lang_code: str, dataset_na
             return Mapping(kind="columns", indic="tgt", english="src")
         return Mapping(kind="columns", indic="src", english="tgt")
 
+    if "iitb" in dataset_name and "translation" in columns:
+        return Mapping(kind="dict_column", column="translation", indic_key=lang_code, english_key="en")
+
     raise ValueError(f"Unable to auto-detect language columns in {dataset_name} for lang {lang_code}. Columns: {columns}")
 
 
@@ -138,7 +162,23 @@ def _best_scoring_column(scores: Dict[str, int]) -> Optional[str]:
     return best_name
 
 
-def build_extractor(mapping: Mapping) -> Callable[[Dict[str, Any]], Tuple[str, str]]:
+def _find_dict_key(data: Dict[str, Any], candidates: Sequence[str]) -> Optional[str]:
+    lowered_map = {str(key).lower(): key for key in data.keys()}
+    for candidate in candidates:
+        if not candidate:
+            continue
+        cand_lower = candidate.lower()
+        if cand_lower in lowered_map:
+            return lowered_map[cand_lower]
+        for key_lower, original in lowered_map.items():
+            if key_lower.endswith(cand_lower) or cand_lower.endswith(key_lower) or cand_lower in key_lower:
+                return original
+    if lowered_map:
+        return next(iter(lowered_map.values()))
+    return None
+
+
+def build_extractor(mapping: Mapping, lang_code: str) -> Callable[[Dict[str, Any]], Tuple[str, str]]:
     if mapping.kind == "translation":
         column = mapping.column or "translation"
         indic_key = mapping.indic_key or ""
@@ -148,6 +188,34 @@ def build_extractor(mapping: Mapping) -> Callable[[Dict[str, Any]], Tuple[str, s
             data = row.get(column, {})
             indic = normalize_text(data.get(indic_key))
             english = normalize_text(data.get(english_key))
+            return indic, english
+
+        return extractor
+
+    if mapping.kind == "dict_column":
+        column = mapping.column or "translation"
+        preferred_indic = []
+        if mapping.indic_key:
+            preferred_indic.append(mapping.indic_key)
+        preferred_indic.extend(LANG_ALIASES.get(lang_code, []))
+        preferred_english = []
+        if mapping.english_key:
+            preferred_english.append(mapping.english_key)
+        preferred_english.extend(["en", "eng", "english"])
+        resolved_indic: Optional[str] = None
+        resolved_english: Optional[str] = None
+
+        def extractor(row: Dict[str, Any]) -> Tuple[str, str]:
+            nonlocal resolved_indic, resolved_english
+            data = row.get(column, {})
+            if not isinstance(data, dict):
+                data = {}
+            if resolved_indic is None:
+                resolved_indic = _find_dict_key(data, preferred_indic)
+            if resolved_english is None:
+                resolved_english = _find_dict_key(data, preferred_english)
+            indic = normalize_text(data.get(resolved_indic))
+            english = normalize_text(data.get(resolved_english))
             return indic, english
 
         return extractor
@@ -167,34 +235,46 @@ def collect_dataset_pairs(
     dataset_name: str,
     dataset: Dict[str, Any],
     pair: str,
-) -> Tuple[List[Tuple[str, str]], Dict[str, Any]]:
+    *,
+    streaming: bool,
+    seed: int,
+) -> Tuple[Callable[[], Generator[Tuple[str, str], None, None]], Dict[str, Any]]:
     lang_code, _ = pair.split("-", 1)
-    pairs: List[Tuple[str, str]] = []
     summary: Dict[str, Any] = {"source": dataset_name, "by_split": {}, "total": 0}
 
-    for split_name, split_ds in dataset.items():
-        try:
-            mapping = detect_language_columns(split_ds.features, lang_code, dataset_name)
-        except Exception as exc:  # pragma: no cover - dataset schema fallback
-            print(f"[{pair}] Warning: {exc}. Skipping split {split_name} in {dataset_name}.")
-            continue
-        extractor = build_extractor(mapping)
-        total_rows = getattr(split_ds, "num_rows", None)
-        split_count = 0
-        for indic, english in tqdm(
-            (extractor(row) for row in split_ds),
-            total=total_rows,
-            desc=f"{dataset_name}::{split_name}::{pair}",
-            leave=False,
-        ):
-            pairs.append((indic, english))
-            split_count += 1
-        summary["by_split"][split_name] = split_count
-        summary["total"] += split_count
-    return pairs, summary
+    def iterate() -> Generator[Tuple[str, str], None, None]:
+        for split_name, split_ds in dataset.items():
+            try:
+                mapping = detect_language_columns(split_ds.features, lang_code, dataset_name)
+            except Exception as exc:  # pragma: no cover - dataset schema fallback
+                print(f"[{pair}] Warning: {exc}. Skipping split {split_name} in {dataset_name}.")
+                continue
+            extractor = build_extractor(mapping, lang_code)
+            summary["by_split"].setdefault(split_name, 0)
+            if streaming:
+                try:
+                    iterable = split_ds.shuffle(seed=seed, buffer_size=SHUFFLE_BUFFER_SIZE)
+                except AttributeError:
+                    iterable = split_ds
+            else:
+                total_rows = getattr(split_ds, "num_rows", None)
+                iterable = tqdm(
+                    split_ds,
+                    total=total_rows,
+                    desc=f"{dataset_name}::{split_name}::{pair}",
+                    leave=False,
+                )
+
+            for row in iterable:
+                indic, english = extractor(row)
+                summary["by_split"][split_name] += 1
+                summary["total"] += 1
+                yield indic, english
+
+    return iterate, summary
 
 
-def load_samanantar(pair: str) -> Tuple[List[Tuple[str, str]], Dict[str, Any]]:
+def load_samanantar(pair: str, *, streaming: bool, seed: int) -> Tuple[Callable[[], Generator[Tuple[str, str], None, None]], Dict[str, Any]]:
     lang_code, _ = pair.split("-", 1)
     dataset_name = "ai4bharat/samanantar"
     config_candidates = [f"{lang_code}-en", f"{lang_code}_en", lang_code, f"{lang_code}en"]
@@ -203,7 +283,7 @@ def load_samanantar(pair: str) -> Tuple[List[Tuple[str, str]], Dict[str, Any]]:
     tried: List[str] = []
     for config in config_candidates:
         try:
-            dataset = load_dataset(dataset_name, config)
+            dataset = load_dataset(dataset_name, config, streaming=streaming)
             break
         except Exception:
             tried.append(config)
@@ -219,7 +299,7 @@ def load_samanantar(pair: str) -> Tuple[List[Tuple[str, str]], Dict[str, Any]]:
             if config in tried:
                 continue
             try:
-                dataset = load_dataset(dataset_name, config)
+                dataset = load_dataset(dataset_name, config, streaming=streaming)
                 break
             except Exception:
                 tried.append(config)
@@ -228,13 +308,13 @@ def load_samanantar(pair: str) -> Tuple[List[Tuple[str, str]], Dict[str, Any]]:
         tried_str = ", ".join(tried) if tried else "none"
         raise RuntimeError(f"Unable to load {dataset_name} for lang {lang_code}. Tried configs: {tried_str}")
 
-    return collect_dataset_pairs(dataset_name, dataset, pair)
+    return collect_dataset_pairs(dataset_name, dataset, pair, streaming=streaming, seed=seed)
 
 
-def load_iitb() -> Tuple[List[Tuple[str, str]], Dict[str, Any]]:
+def load_iitb(*, streaming: bool, seed: int) -> Tuple[Callable[[], Generator[Tuple[str, str], None, None]], Dict[str, Any]]:
     dataset_name = "cfilt/iitb-english-hindi"
-    dataset = load_dataset(dataset_name)
-    return collect_dataset_pairs(dataset_name, dataset, "hi-en")
+    dataset = load_dataset(dataset_name, streaming=streaming)
+    return collect_dataset_pairs(dataset_name, dataset, "hi-en", streaming=streaming, seed=seed)
 
 
 def clean_pairs(
@@ -310,14 +390,107 @@ def clean_pairs(
     return cleaned, dict(stats)
 
 
-def write_tsv_rows(rows: Sequence[Dict[str, str]], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def write_tsv_rows(rows: Sequence[Dict[str, str]], path: Path, pair: str) -> int:
     fieldnames = ["src", "tgt", "style_src", "style_tgt", "simplify", "pair"]
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, delimiter="\t", fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
+    with atomic_tsv_writer(path, fieldnames) as writer:
+        for idx, row in enumerate(rows, 1):
             writer.writerow(row)
+            if idx % 10_000 == 0:
+                print(f"[{pair}] Progress: {idx} cleaned rows written...")
+    return len(rows)
+
+
+def stream_and_write_pairs(
+    pair: str,
+    sources: Sequence[Tuple[Callable[[], Generator[Tuple[str, str], None, None]], Dict[str, Any]]],
+    *,
+    output_path: Path,
+    max_per_pair: Optional[int],
+    enforce_langid: bool,
+    lang_identifier: Any,
+) -> Dict[str, Any]:
+    stats = Counter()
+    lang_code, _ = pair.split("-", 1)
+    expected_lang = LANGID_CODES.get(lang_code)
+    dedup_hashes: set[int] = set()
+    hash_queue: deque[int] = deque()
+    fieldnames = ["src", "tgt", "style_src", "style_tgt", "simplify", "pair"]
+    eviction_notified = False
+
+    with atomic_tsv_writer(output_path, fieldnames) as writer:
+        written = 0
+        limit_reached = False
+        for iterator_factory, _summary in sources:
+            iterator = iterator_factory()
+            for indic, english in iterator:
+                stats["loaded"] += 1
+
+                src = normalize_text(indic)
+                tgt = normalize_text(english)
+
+                if not src or not tgt:
+                    stats["dropped_empty"] += 1
+                    continue
+
+                tokens_src = src.split()
+                tokens_tgt = tgt.split()
+                if len(tokens_src) < 3 or len(tokens_src) > 256 or len(tokens_tgt) < 3 or len(tokens_tgt) > 256:
+                    stats["dropped_length"] += 1
+                    continue
+
+                ratio = len(tokens_tgt) / max(len(tokens_src), 1)
+                if ratio < 0.5 or ratio > 2.0:
+                    stats["dropped_ratio"] += 1
+                    continue
+
+                if enforce_langid and lang_identifier is not None and expected_lang:
+                    src_lang = lang_identifier.classify(src)[0]
+                    tgt_lang = lang_identifier.classify(tgt)[0]
+                    if src_lang != expected_lang or tgt_lang != "en":
+                        stats["dropped_langid"] += 1
+                        continue
+
+                key_hash = hash((src, tgt))
+                if key_hash in dedup_hashes:
+                    stats["duplicates"] += 1
+                    continue
+
+                dedup_hashes.add(key_hash)
+                hash_queue.append(key_hash)
+                if len(hash_queue) > DEDUP_CACHE_LIMIT:
+                    oldest = hash_queue.popleft()
+                    dedup_hashes.discard(oldest)
+                    stats["dedup_cache_evictions"] += 1
+                    if not eviction_notified:
+                        print(
+                            f"[{pair}] Dedup cache reached {DEDUP_CACHE_LIMIT}; evicting oldest hashes to cap memory."
+                        )
+                        eviction_notified = True
+
+                record = {
+                    "src": src,
+                    "tgt": tgt,
+                    "style_src": DEFAULT_STYLE["style_src"],
+                    "style_tgt": DEFAULT_STYLE["style_tgt"],
+                    "simplify": DEFAULT_STYLE["simplify"],
+                    "pair": pair,
+                }
+                writer.writerow(record)
+                written += 1
+                stats["kept"] = written
+
+                if written % 10_000 == 0:
+                    print(f"[{pair}] Progress: {written} cleaned rows written...")
+
+                if max_per_pair is not None and max_per_pair > 0 and written >= max_per_pair:
+                    limit_reached = True
+                    break
+
+            if limit_reached:
+                break
+
+    stats["downsampled_to"] = stats.get("kept", 0)
+    return dict(stats)
 
 
 def export_flores(pairs: Sequence[str]) -> Dict[str, Any]:
@@ -351,12 +524,13 @@ def export_flores(pairs: Sequence[str]) -> Dict[str, Any]:
                 continue
             split_ds = dataset[split_name]
             try:
+                lang_code = pair.split("-", 1)[0]
                 mapping = detect_language_columns(
                     split_ds.features,
-                    pair.split("-", 1)[0],
+                    lang_code,
                     f"{used_name}::{split_name}",
                 )
-                extractor = build_extractor(mapping)
+                extractor = build_extractor(mapping, lang_code)
                 indic_column = _resolve_flores_column(split_ds.features, indic_code)
                 english_column = _resolve_flores_column(split_ds.features, english_code)
             except Exception:
@@ -404,6 +578,7 @@ def _resolve_flores_column(features: Dict[str, Any], lang_code: str) -> str:
 def run(args: argparse.Namespace) -> None:
     pairs = args.pairs
     max_per_pair = args.max_per_pair
+    streaming = args.stream.lower() == "yes"
     lang_check = args.lang_check.lower() == "yes"
     export_flores_flag = args.export_flores.lower() == "yes"
 
@@ -412,7 +587,14 @@ def run(args: argparse.Namespace) -> None:
         lang_check = False
 
     if lang_check and langid is not None:
-        langid.set_languages(["en"] + [LANGID_CODES[pair.split("-", 1)[0]] for pair in pairs if pair.split("-", 1)[0] in LANGID_CODES])
+        langid.set_languages(
+            ["en"]
+            + [
+                LANGID_CODES[pair.split("-", 1)[0]]
+                for pair in pairs
+                if pair.split("-", 1)[0] in LANGID_CODES
+            ]
+        )
 
     summary: Dict[str, Any] = {}
     data_root = Path("data/raw")
@@ -424,26 +606,46 @@ def run(args: argparse.Namespace) -> None:
             continue
 
         print(f"[{pair}] Starting dataset fetch...")
-        samanantar_pairs, samanantar_stats = load_samanantar(pair)
-        all_pairs: List[Tuple[str, str]] = list(samanantar_pairs)
-        source_breakdown = [samanantar_stats]
+        sources: List[Tuple[Callable[[], Generator[Tuple[str, str], None, None]], Dict[str, Any]]] = []
+        samanantar_iter, samanantar_stats = load_samanantar(pair, streaming=streaming, seed=args.seed)
+        sources.append((samanantar_iter, samanantar_stats))
 
         if pair == "hi-en":
-            iitb_pairs, iitb_stats = load_iitb()
-            all_pairs.extend(iitb_pairs)
-            source_breakdown.append(iitb_stats)
+            iitb_iter, iitb_stats = load_iitb(streaming=streaming, seed=args.seed)
+            sources.append((iitb_iter, iitb_stats))
 
-        sources_label = ", ".join(f"{src['source']}={src['total']}" for src in source_breakdown)
-        print(f"[{pair}] Loaded {len(all_pairs)} rows before cleaning (sources: {sources_label})")
+        output_path = data_root / f"{pair.replace('-', '_')}.tsv"
+        cleaned_rows: Optional[List[Dict[str, str]]] = None
 
-        cleaned_rows, stats = clean_pairs(
-            all_pairs,
-            pair,
-            enforce_langid=lang_check,
-            random_seed=args.seed,
-            max_per_pair=max_per_pair,
-            lang_identifier=langid,
-        )
+        if streaming:
+            stats = stream_and_write_pairs(
+                pair,
+                sources,
+                output_path=output_path,
+                max_per_pair=max_per_pair,
+                enforce_langid=lang_check,
+                lang_identifier=langid,
+            )
+        else:
+            all_pairs: List[Tuple[str, str]] = []
+            for iterator_factory, _src_stats in sources:
+                all_pairs.extend(list(iterator_factory()))
+
+            cleaned_rows, stats = clean_pairs(
+                all_pairs,
+                pair,
+                enforce_langid=lang_check,
+                random_seed=args.seed,
+                max_per_pair=max_per_pair,
+                lang_identifier=langid,
+            )
+            write_tsv_rows(cleaned_rows, output_path, pair)
+
+        source_breakdown = [dict(src_summary) for _, src_summary in sources]
+        raw_total = sum(src.get("total", 0) for src in source_breakdown)
+        sources_label = ", ".join(f"{src['source']}={src.get('total', 0)}" for src in source_breakdown)
+        print(f"[{pair}] Loaded {raw_total} rows before cleaning (sources: {sources_label})")
+
         kept = stats.get("kept", 0)
         written_count = stats.get("downsampled_to", kept)
         print(
@@ -451,16 +653,16 @@ def run(args: argparse.Namespace) -> None:
             f"removed_length={stats.get('dropped_length', 0)}, removed_ratio={stats.get('dropped_ratio', 0)}, "
             f"removed_langid={stats.get('dropped_langid', 0)}, deduped={stats.get('duplicates', 0)}"
         )
-        if written_count != kept:
+        if max_per_pair is not None and max_per_pair > 0 and kept >= max_per_pair:
+            print(f"[{pair}] Reached max_per_pair={max_per_pair}; stopping further ingestion.")
+        if not streaming and written_count != kept:
             print(f"[{pair}] Downsampled to {written_count} due to max_per_pair={max_per_pair}.")
 
-        output_path = data_root / f"{pair.replace('-', '_')}.tsv"
-        write_tsv_rows(cleaned_rows, output_path)
         print(f"[{pair}] Wrote {written_count} rows to {output_path}.")
 
         summary[pair] = {
             "sources": source_breakdown,
-            "raw_total": len(all_pairs),
+            "raw_total": raw_total,
             "stats": stats,
             "written": written_count,
         }
@@ -486,7 +688,7 @@ def run(args: argparse.Namespace) -> None:
         print(f"- FLORES export: {status}")
 
     print("\nNext commands:")
-    print("python scripts/fetch_corpora.py --pairs hi-en ta-en te-en ml-en --max_per_pair 300000")
+    print("python scripts/fetch_corpora.py --pairs hi-en --max_per_pair 80000 --stream yes --export_flores no")
     print("python scripts/data_prep.py --manifest data/manifests/review2.yaml")
     print("python scripts/make_splits.py --pair hi-en --in data/clean/hi_en --out data/clean/hi_en --seed 42")
     print("python scripts/make_splits.py --pair ta-en --in data/clean/ta_en --out data/clean/ta_en --seed 42")
@@ -497,6 +699,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Download and clean Indic-English corpora into TSV format.")
     parser.add_argument("--pairs", nargs="+", required=True, help="Space-separated list of language pairs (e.g., hi-en ta-en).")
     parser.add_argument("--max_per_pair", type=int, default=None, help="Optional maximum pairs per language after cleaning.")
+    parser.add_argument("--stream", choices=["yes", "no"], default="yes", help="Enable streaming fetch and on-the-fly cleaning.")
     parser.add_argument("--export_flores", choices=["yes", "no"], default="no", help="Export FLORES-200 dev/devtest files.")
     parser.add_argument("--lang_check", choices=["yes", "no"], default="no", help="Enable langid-based sanity check.")
     parser.add_argument("--seed", type=int, default=2024, help="Random seed for downsampling.")

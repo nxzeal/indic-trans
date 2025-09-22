@@ -1,0 +1,28 @@
+{
+  "hi-en": {
+    "sources": [
+      {
+        "source": "ai4bharat/samanantar",
+        "by_split": {
+          "train": 83993
+        },
+        "total": 83993
+      },
+      {
+        "source": "cfilt/iitb-english-hindi",
+        "by_split": {},
+        "total": 0
+      }
+    ],
+    "raw_total": 83993,
+    "stats": {
+      "loaded": 83993,
+      "kept": 80000,
+      "dropped_ratio": 2472,
+      "dropped_length": 1518,
+      "duplicates": 3,
+      "downsampled_to": 80000
+    },
+    "written": 80000
+  }
+}
