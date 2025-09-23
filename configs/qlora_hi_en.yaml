@@ -1,12 +1,15 @@
-base_model: "ai4bharat/indictrans2-en-indic-1B"
-pairs: ["hi-en","en-hi"]
+base_model: "./models/indictrans2-en-indic-1B"
+model_args:
+  trust_remote_code: true
+  use_fast_tokenizer: true
+pairs: ["hi-en"]
 data_dir: "data/clean/hi_en"
-output_dir: "outputs/hi_en_r16"
+output_dir: "outputs/hi_en_r8"
 seed: 42
 
 lora:
-  r: 16
-  alpha: 32
+  r: 8
+  alpha: 16
   dropout: 0.05
   target_modules: ["q_proj","v_proj","k_proj","o_proj"]
 
@@ -17,18 +20,22 @@ quantization:
   bnb_4bit_compute_dtype: "float16"
 
 train:
-  lr: 2.0e-4
-  batch_size: 64
-  grad_accum: 4
-  max_steps: 12000
+  lr: 1.0e-4
+  batch_size: 4
+  grad_accum: 16
+  max_steps: 6000
   warmup_ratio: 0.03
   eval_every: 500
   save_every: 1000
   gradient_checkpointing: true
   fp16: true
+  save_total_limit: 2
 
 task:
+  max_src_len: 256
+  max_tgt_len: 192
   tags:
     style: ["formal","informal"]
     simplify: ["yes","no"]
   prompt_template: "<SRC_LANG> <TGT_LANG> <STYLE> <SIMPLIFY> ||| <TEXT>"
+  

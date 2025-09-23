@@ -1,4 +1,4 @@
-base_model: "ai4bharat/indictrans2-en-indic-1B"
+base_model: "./models/indictrans2-en-indic-1B"
 pairs: ["ml-en","en-ml"]
 data_dir: "data/clean/ml_en"
 output_dir: "outputs/ml_en_r16"

@@ -141,8 +141,14 @@ def tokenize_datasets(dataset: DatasetDict, tokenizer: AutoTokenizer, max_input:
 def configure_model(cfg: Dict[str, Any]) -> tuple[AutoModelForSeq2SeqLM, AutoTokenizer, bool]:
     base_model = cfg["base_model"]
     quant_cfg = cfg.get("quantization", {})
+    model_args = cfg.get("model_args", {})
 
-    load_kwargs: Dict[str, Any] = {"device_map": "auto"}
+    trust_remote_code = bool(model_args.get("trust_remote_code", True))
+    use_fast_tokenizer = bool(model_args.get("use_fast_tokenizer", True))
+    allow_resize = bool(model_args.get("allow_resize_token_embeddings", False))
+
+    load_kwargs: Dict[str, Any] = {"device_map": "auto", "trust_remote_code": trust_remote_code}
+    dtype_value = None
     use_4bit = quant_cfg.get("load_in_4bit", False)
     if use_4bit:
         if BitsAndBytesConfig is None:
@@ -163,17 +169,75 @@ def configure_model(cfg: Dict[str, Any]) -> tuple[AutoModelForSeq2SeqLM, AutoTok
             bnb_4bit_compute_dtype=compute_dtype,
         )
         load_kwargs["quantization_config"] = bnb_config
-        load_kwargs["torch_dtype"] = compute_dtype
+        dtype_value = compute_dtype
     else:
         default_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        load_kwargs["torch_dtype"] = default_dtype
+        dtype_value = default_dtype
 
-    tokenizer = AutoTokenizer.from_pretrained(base_model, use_fast=True)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            base_model,
+            use_fast=use_fast_tokenizer,
+            trust_remote_code=trust_remote_code,
+        )
+    except Exception as exc:
+        if use_fast_tokenizer:
+            print(f"[loader] AutoTokenizer fast load failed ({exc}); retrying with use_fast=False.")
+            tokenizer = AutoTokenizer.from_pretrained(
+                base_model,
+                use_fast=False,
+                trust_remote_code=trust_remote_code,
+            )
+        else:
+            raise
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForSeq2SeqLM.from_pretrained(base_model, **load_kwargs)
-    model.resize_token_embeddings(len(tokenizer))
+    model_kwargs = dict(load_kwargs)
+    try:
+        if dtype_value is not None:
+            model = AutoModelForSeq2SeqLM.from_pretrained(base_model, dtype=dtype_value, **model_kwargs)
+        else:
+            model = AutoModelForSeq2SeqLM.from_pretrained(base_model, **model_kwargs)
+    except TypeError as exc:
+        if dtype_value is not None:
+            print(f"[loader] dtype kwarg unsupported ({exc}); retrying with torch_dtype={dtype_value}.")
+            model = AutoModelForSeq2SeqLM.from_pretrained(base_model, torch_dtype=dtype_value, **model_kwargs)
+        else:
+            raise
+
+    embedding_layer = None
+    try:
+        embedding_layer = model.get_input_embeddings()
+    except (AttributeError, TypeError):
+        embedding_layer = None
+
+    tok_size = tokenizer.vocab_size
+    model_vocab_size = None
+    if embedding_layer is not None and hasattr(embedding_layer, "weight"):
+        model_vocab_size = embedding_layer.weight.shape[0]
+
+    model_class_name = model.__class__.__name__
+    indictrans_model = "IndicTrans" in model_class_name
+
+    if indictrans_model:
+        print("[loader] Skipping resize_token_embeddings for IndicTrans* models.")
+    elif model_vocab_size is not None and tok_size != model_vocab_size:
+        if allow_resize:
+            try:
+                model.resize_token_embeddings(tok_size)
+            except (NotImplementedError, AttributeError):
+                print("[loader] resize_token_embeddings not supported; skipping.")
+        else:
+            print("[loader] Tokenizer/model vocab mismatch but resize disabled; continuing.")
+
+    if hasattr(model, "tie_weights"):
+        try:
+            model.tie_weights()
+            print("[loader] tie_weights() applied.")
+        except Exception:
+            print("[loader] tie_weights() not supported; continuing.")
+
     gradient_checkpointing = cfg["train"].get("gradient_checkpointing", False)
     if gradient_checkpointing:
         model.gradient_checkpointing_enable()
