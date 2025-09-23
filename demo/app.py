@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from scripts.infer import load_pipeline, resolve_device
+from scripts.infer import DEFAULT_MODEL_ARGS, load_pipeline, resolve_device
 from utils_text import build_prompt
 
 AVAILABLE_PAIRS: Dict[str, Dict[str, str]] = {
@@ -30,6 +30,9 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 _device = resolve_device("auto")
 _pipelines: Dict[str, Tuple[object, object]] = {}
+
+# Ensure demo inference mirrors loader safeguards (explicit for clarity)
+DEFAULT_MODEL_ARGS["allow_resize_token_embeddings"] = False
 
 
 def get_pipeline(pair: str):

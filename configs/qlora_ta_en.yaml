@@ -1,4 +1,4 @@
-base_model: "ai4bharat/indictrans2-en-indic-1B"
+base_model: "./models/indictrans2-en-indic-1B"
 pairs: ["ta-en","en-ta"]
 data_dir: "data/clean/ta_en"
 output_dir: "outputs/ta_en_r16"

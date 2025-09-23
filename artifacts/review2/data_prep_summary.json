@@ -1,0 +1,23 @@
+{
+  "manifest": "data/manifests/review2.yaml",
+  "pairs": [
+    {
+      "pair": "hi-en",
+      "raw_rows": 80000,
+      "kept_rows": 80000,
+      "dropped_missing": 0,
+      "dropped_length": 0,
+      "deduped": 0,
+      "note": "Synthetic rewrite generation capped at 5% (not run; placeholder)."
+    },
+    {
+      "pair": "ta-en",
+      "raw_rows": 80000,
+      "kept_rows": 80000,
+      "dropped_missing": 0,
+      "dropped_length": 0,
+      "deduped": 0,
+      "note": "Synthetic rewrite generation capped at 5% (not run; placeholder)."
+    }
+  ]
+}
