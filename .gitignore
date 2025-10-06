@@ -1,25 +1,70 @@
+# === Python caches & virtualenvs ===
 __pycache__/
 *.py[cod]
+*.pyo
 *.so
-*.dll
-*.log
+*.egg-info/
+.env/
 .venv/
-.env
-.env.*
-mlruns/
+
+# === Editors / OS ===
+.ipynb_checkpoints/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Logs / temps ===
+*.log
+*.tmp
+*.bak
+tmp/
+logs/
+
+# === Hugging Face / datasets caches (local) ===
+~/.cache/
+.cache/
+hf_cache/
+transformers_cache/
+datasets_cache/
+
+# === Large models, checkpoints, runs (generated) ===
+models/
 outputs/
-artifacts/review2/screenshots/*
-!artifacts/review2/screenshots/.gitkeep
-# Data artifacts
-data/raw/*
-!data/raw/.gitkeep
-data/clean/*/*.tsv
-!data/clean/**/.gitkeep
-data/clean/*/stats.json
-# Large artifacts not tracked by default
-artifacts/full/*
-!artifacts/full/.gitkeep
-# Model weights
+artifacts/
+checkpoints/
+runs/
+wandb/
+mlruns/
+
+# Keep lightweight review artifacts (docs/metrics/images) under artifacts/
+!artifacts/**/*.md
+!artifacts/**/*.json
+!artifacts/**/*.png
+
+# === Data directories (generated) ===
+data/raw/
+data/clean/
+data/processed/
+
+# Keep manifests & small structured config/docs inside data/
+!data/manifests/**
+!data/**/*.yaml
+!data/**/*.yml
+!data/**/*.json
+!data/**/*.md
+
+# Optional: keep tiny smoke-test samples if present
+!data/sample/**
+
+# === Common big file extensions ===
 *.pt
 *.bin
 *.safetensors
+*.tar
+*.zip
+*.gz
+*.csv
+*.tsv
