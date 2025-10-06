@@ -15,7 +15,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from scripts.infer import DEFAULT_MODEL_ARGS, load_pipeline, resolve_device
-from utils_text import build_prompt
+
+IT2_TAG = {
+    "en": "eng_Latn",
+    "hi": "hin_Deva",
+    "ta": "tam_Taml",
+    "te": "tel_Telu",
+    "ml": "mal_Mlym",
+}
 
 AVAILABLE_PAIRS: Dict[str, Dict[str, str]] = {
     "hi-en": {"model": "outputs/hi_en_r16", "src_lang": "hi", "tgt_lang": "en", "label": "Hindi -> English"},
@@ -81,7 +88,9 @@ async def infer(
         try:
             model, tokenizer = get_pipeline(pair)
             cfg = AVAILABLE_PAIRS[pair]
-            prompt = build_prompt(cfg["src_lang"], cfg["tgt_lang"], style, simplify, text)
+            src_tag = IT2_TAG.get(cfg["src_lang"].lower(), cfg["src_lang"])
+            tgt_tag = IT2_TAG.get(cfg["tgt_lang"].lower(), cfg["tgt_lang"])
+            prompt = f"{src_tag} {tgt_tag} {style} {simplify} ||| {text}"
             inputs = tokenizer(prompt, return_tensors="pt", padding=True).to(_device)
             with torch.inference_mode():
                 outputs = model.generate(**inputs, max_new_tokens=max_new_tokens)

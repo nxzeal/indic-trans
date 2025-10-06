@@ -5,13 +5,19 @@ import torch
 from peft import PeftConfig, PeftModel
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
-from utils_text import build_prompt
-
 
 DEFAULT_MODEL_ARGS = {
     "trust_remote_code": True,
     "use_fast_tokenizer": True,
     "allow_resize_token_embeddings": False,
+}
+
+IT2_TAG = {
+    "en": "eng_Latn",
+    "hi": "hin_Deva",
+    "ta": "tam_Taml",
+    "te": "tel_Telu",
+    "ml": "mal_Mlym",
 }
 
 
@@ -135,7 +141,9 @@ def main() -> None:
     device = resolve_device(args.device)
     model, tokenizer = load_pipeline(Path(args.model), device)
 
-    prompt = build_prompt(args.src_lang, args.tgt_lang, args.style, args.simplify, args.text)
+    src_tag = IT2_TAG.get(args.src_lang.lower(), args.src_lang)
+    tgt_tag = IT2_TAG.get(args.tgt_lang.lower(), args.tgt_lang)
+    prompt = f"{src_tag} {tgt_tag} {args.style} {args.simplify} ||| {args.text}"
     inputs = tokenizer(prompt, return_tensors="pt", padding=True).to(device)
     with torch.inference_mode():
         generated = model.generate(**inputs, max_new_tokens=args.max_new_tokens)
