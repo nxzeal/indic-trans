@@ -48,6 +48,21 @@ python scripts/make_splits.py --pair ta-en --in data/clean/ta_en --out data/clea
 `
 (Repeat with 	e-en, ml-en when preparing the full scope.)
 
+### 2b. Optional control augmentation (teaches informal/simplify toggles)
+`\bash
+python scripts/augment_controls.py \
+  --in data/clean/hi_en/train.tsv --out data/clean/hi_en/train_aug.tsv \
+  --lang_pair hi-en --sample_ratio 0.25 --seed 42 \
+  --modes informal,formal,simplify --max_src_len 256 --max_tgt_len 192
+`
+Run the same command with `ta-en` paths to cover Tamilâ†’English before retraining. The script preserves a `train.orig.tsv` backup and patches `train.tsv` in-place.
+
+### 2c. Repair split direction/pair metadata (if needed)
+`\bash
+python scripts/fix_splits_direction.py --dir data/clean/hi_en --pair hi-en --detect_lang yes --backup yes
+python scripts/fix_splits_direction.py --dir data/clean/ta_en --pair ta-en --detect_lang yes --backup yes
+`
+
 ### 3. QLoRA Training (Review-2 focus pairs)
 `ash
 accelerate launch scripts/train_lora.py --config configs/qlora_hi_en.yaml
@@ -94,9 +109,9 @@ Builds a CPU-only image for serving the FastAPI demo; mount outputs/ so adapters
 ## 70% Cut Checklist
 | Scope | Status |
 |-------|--------|
-| hi?en | **Show** – cleaned data, adapter, metrics, demo |
-| ta?en | **Show** – cleaned data, adapter, metrics, demo |
-| te?en | Off-stage – configs ready, data pipeline shared |
-| ml?en | Off-stage – configs ready, data pipeline shared |
+| hi?en | **Show**  cleaned data, adapter, metrics, demo |
+| ta?en | **Show**  cleaned data, adapter, metrics, demo |
+| te?en | Off-stage  configs ready, data pipeline shared |
+| ml?en | Off-stage  configs ready, data pipeline shared |
 
 Launch Review-2 using the commands above; keep te?en and ml?en prepared but unpublished until the full review phase.

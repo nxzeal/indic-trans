@@ -1,5 +1,6 @@
 import argparse
 import random
+from inspect import signature
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -33,6 +34,13 @@ from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_tr
 
 from utils_io import ensure_dir, read_tsv, write_json
 
+IT2_TAG = {
+    "en": "eng_Latn",
+    "hi": "hin_Deva",
+    "ta": "tam_Taml",
+    "te": "tel_Telu",
+    "ml": "mal_Mlym",
+}
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a QLoRA adapter on IndicTrans data.")
@@ -69,36 +77,51 @@ def prepare_datasets(cfg: Dict[str, Any]) -> DatasetDict:
     data_dir = Path(cfg["data_dir"])
     base_pair = cfg["pairs"][0]
     base_src, base_tgt = base_pair.split("-")
-    template = cfg["task"]["prompt_template"]
+    tag_log_flag = {"done": False}
 
     def expand_row(row: Dict[str, str]) -> List[Dict[str, str]]:
         examples: List[Dict[str, str]] = []
-        for pair in cfg["pairs"]:
-            src_lang, tgt_lang = pair.split("-")
-            if src_lang == base_src and tgt_lang == base_tgt:
+        row_pair = (row.get("pair") or base_pair).lower()
+        if "-" in row_pair:
+            row_src_default, row_tgt_default = row_pair.split("-", 1)
+        else:
+            row_src_default, row_tgt_default = base_src.lower(), base_tgt.lower()
+
+        direct_pair = f"{row_src_default}-{row_tgt_default}"
+        reverse_pair = f"{row_tgt_default}-{row_src_default}"
+
+        for direction in cfg["pairs"]:
+            src_lang_raw, tgt_lang_raw = direction.split("-")
+            src_lang = src_lang_raw.lower()
+            tgt_lang = tgt_lang_raw.lower()
+            direction_key = f"{src_lang}-{tgt_lang}"
+
+            if direction_key == direct_pair:
                 source_text = row["src"]
                 target_text = row["tgt"]
                 style = row.get("style_tgt", "formal")
-            elif src_lang == base_tgt and tgt_lang == base_src:
+            elif direction_key == reverse_pair:
                 source_text = row["tgt"]
                 target_text = row["src"]
                 style = row.get("style_src", "formal")
             else:
                 continue
+
             simplify = row.get("simplify", "no")
-            prompt = (
-                template.replace("<SRC_LANG>", src_lang)
-                .replace("<TGT_LANG>", tgt_lang)
-                .replace("<STYLE>", style)
-                .replace("<SIMPLIFY>", simplify)
-                .replace("<TEXT>", source_text)
-            )
+            src_tag = IT2_TAG.get(src_lang, src_lang_raw)
+            tgt_tag = IT2_TAG.get(tgt_lang, tgt_lang_raw)
+            prompt = f"{src_tag} {tgt_tag} {style} {simplify} ||| {source_text}"
+
+            if not tag_log_flag["done"]:
+                print(f"[loader] lang tags sample: {src_tag} -> {tgt_tag}")
+                tag_log_flag["done"] = True
+
             examples.append(
                 {
                     "prompt": prompt,
                     "target": target_text,
                     "source": source_text,
-                    "direction": pair,
+                    "direction": direction,
                     "style": style,
                     "simplify": simplify,
                 }
@@ -128,14 +151,47 @@ def prepare_datasets(cfg: Dict[str, Any]) -> DatasetDict:
 def tokenize_datasets(dataset: DatasetDict, tokenizer: AutoTokenizer, max_input: int = 1024, max_target: int = 512) -> DatasetDict:
     def tokenize_batch(batch: Dict[str, List[str]]) -> Dict[str, Any]:
         model_inputs = tokenizer(batch["prompt"], max_length=max_input, truncation=True)
-        with tokenizer.as_target_tokenizer():
-            labels = tokenizer(batch["target"], max_length=max_target, truncation=True)
+        labels = tokenizer(text_target=batch["target"], max_length=max_target, truncation=True)
         model_inputs["labels"] = labels["input_ids"]
         return model_inputs
 
     remove_cols = list(next(iter(dataset.values())).column_names)
     tokenized = dataset.map(tokenize_batch, batched=True, remove_columns=remove_cols)
     return tokenized
+
+
+def _build_training_args(cfg: Dict[str, Any], output_dir: Path) -> Seq2SeqTrainingArguments:
+    train_cfg = cfg["train"]
+    eval_every = train_cfg["eval_every"]
+    save_every = train_cfg["save_every"]
+    logging_steps = max(50, max(1, eval_every // 5))
+
+    kwargs: Dict[str, Any] = {
+        "output_dir": str(output_dir),
+        "learning_rate": train_cfg["lr"],
+        "per_device_train_batch_size": train_cfg["batch_size"],
+        "gradient_accumulation_steps": train_cfg["grad_accum"],
+        "max_steps": train_cfg["max_steps"],
+        "warmup_ratio": train_cfg.get("warmup_ratio", 0.0),
+        "eval_steps": eval_every,
+        "save_strategy": "steps",
+        "save_steps": save_every,
+        "logging_steps": logging_steps,
+        "predict_with_generate": True,
+        "fp16": train_cfg.get("fp16", False) and torch.cuda.is_available(),
+        "bf16": train_cfg.get("bf16", False) and torch.cuda.is_available(),
+        "report_to": ["mlflow"],
+        "load_best_model_at_end": False,
+        "save_total_limit": train_cfg.get("save_total_limit", 2),
+    }
+
+    params = signature(Seq2SeqTrainingArguments.__init__).parameters
+    if "evaluation_strategy" in params:
+        kwargs["evaluation_strategy"] = "steps"
+    elif "eval_strategy" in params:
+        kwargs["eval_strategy"] = "steps"
+
+    return Seq2SeqTrainingArguments(**kwargs)
 
 
 def configure_model(cfg: Dict[str, Any]) -> tuple[AutoModelForSeq2SeqLM, AutoTokenizer, bool]:
@@ -285,23 +341,11 @@ def train(cfg: Dict[str, Any], config_path: Path) -> None:
     collator = DataCollatorForSeq2Seq(tokenizer, model=model)
 
     train_cfg = cfg["train"]
-    training_args = Seq2SeqTrainingArguments(
-        output_dir=str(output_dir),
-        learning_rate=train_cfg["lr"],
-        per_device_train_batch_size=train_cfg["batch_size"],
-        gradient_accumulation_steps=train_cfg["grad_accum"],
-        max_steps=train_cfg["max_steps"],
-        warmup_ratio=train_cfg.get("warmup_ratio", 0.0),
-        evaluation_strategy="steps",
-        eval_steps=train_cfg["eval_every"],
-        save_steps=train_cfg["save_every"],
-        logging_steps=50,
-        predict_with_generate=True,
-        fp16=train_cfg.get("fp16", False) and torch.cuda.is_available(),
-        bf16=train_cfg.get("bf16", False) and torch.cuda.is_available(),
-        report_to=["mlflow"],
-        load_best_model_at_end=False,
-        save_total_limit=2,
+    training_args = _build_training_args(cfg, output_dir)
+    keys_preview = list(training_args.to_dict().keys())[:5]
+    print(
+        f"[trainer] using eval_every={train_cfg['eval_every']}, "
+        f"save_every={train_cfg['save_every']}, keys={keys_preview}..."
     )
 
     mlflow.set_tracking_uri(f"file://{Path('mlruns').resolve()}")
