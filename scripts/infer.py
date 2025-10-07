@@ -1,16 +1,23 @@
 import argparse
 from pathlib import Path
+from typing import Optional
 
 import torch
-from peft import PeftConfig, PeftModel
+from IndicTransToolkit.processor import IndicProcessor
+from peft import PeftModel
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
+try:
+    from transformers import BitsAndBytesConfig  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    BitsAndBytesConfig = None  # type: ignore
 
-DEFAULT_MODEL_ARGS = {
-    "trust_remote_code": True,
-    "use_fast_tokenizer": True,
-    "allow_resize_token_embeddings": False,
-}
+try:  # pragma: no cover - optional dependency
+    import bitsandbytes as _bnb  # noqa: F401
+
+    BNB_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    BNB_AVAILABLE = False
 
 IT2_TAG = {
     "en": "eng_Latn",
@@ -21,76 +28,42 @@ IT2_TAG = {
 }
 
 
-def _load_tokenizer(source: str | Path, *, trust_remote_code: bool, use_fast: bool):
-    try:
-        return AutoTokenizer.from_pretrained(
-            source,
-            trust_remote_code=trust_remote_code,
-            use_fast=use_fast,
-        )
-    except Exception as exc:
-        if use_fast:
-            print(f"[loader] Tokenizer load failed with use_fast=True ({exc}); retrying with use_fast=False.")
-            return AutoTokenizer.from_pretrained(
-                source,
-                trust_remote_code=trust_remote_code,
-                use_fast=False,
-            )
-        raise
-
-
-def _load_model_with_dtype(model_name: str, *, dtype_value: torch.dtype, trust_remote_code: bool):
-    base_kwargs = {"trust_remote_code": trust_remote_code}
-    try:
-        return AutoModelForSeq2SeqLM.from_pretrained(model_name, dtype=dtype_value, **base_kwargs)
-    except TypeError as exc:
-        print(f"[loader] dtype kwarg unsupported ({exc}); retrying with torch_dtype={dtype_value}.")
-        return AutoModelForSeq2SeqLM.from_pretrained(model_name, torch_dtype=dtype_value, **base_kwargs)
-
-
-def _maybe_resize_and_tie(model, tokenizer, *, allow_resize: bool) -> None:
-    embedding_layer = None
-    try:
-        embedding_layer = model.get_input_embeddings()
-    except (AttributeError, TypeError):
-        embedding_layer = None
-
-    tok_size = tokenizer.vocab_size
-    model_vocab_size = None
-    if embedding_layer is not None and hasattr(embedding_layer, "weight"):
-        model_vocab_size = embedding_layer.weight.shape[0]
-
-    model_class_name = model.__class__.__name__
-    indictrans_model = "IndicTrans" in model_class_name
-
-    if indictrans_model:
-        print("[loader] Skipping resize_token_embeddings for IndicTrans* models.")
-    elif model_vocab_size is not None and tok_size != model_vocab_size:
-        if allow_resize:
-            try:
-                model.resize_token_embeddings(tok_size)
-            except (NotImplementedError, AttributeError):
-                print("[loader] resize_token_embeddings not supported; skipping.")
-        else:
-            print("[loader] Tokenizer/model vocab mismatch but resize disabled; continuing.")
-
-    if hasattr(model, "tie_weights"):
-        try:
-            model.tie_weights()
-            print("[loader] tie_weights() applied.")
-        except Exception:
-            print("[loader] tie_weights() not supported; continuing.")
-
-
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run inference with a trained IndicTrans LoRA adapter.")
-    parser.add_argument("--model", required=True, help="Path to the LoRA adapter directory.")
+    parser = argparse.ArgumentParser(description="Run IndicTrans2 inference with optional LoRA adapter.")
+    parser.add_argument(
+        "--base",
+        default="models/indictrans2-indic-en-1B",
+        help="Base model path or Hugging Face repo id.",
+    )
+    parser.add_argument(
+        "--adapter",
+        default=None,
+        help="Optional PEFT/LoRA adapter directory (e.g., outputs/hi_en_r16/checkpoint-6000).",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Deprecated alias for --adapter (kept for backward compatibility).",
+    )
     parser.add_argument("--src_lang", required=True, help="Source language code, e.g. hi.")
     parser.add_argument("--tgt_lang", required=True, help="Target language code, e.g. en.")
     parser.add_argument("--style", choices=["formal", "informal"], required=True)
     parser.add_argument("--simplify", choices=["yes", "no"], required=True)
     parser.add_argument("--text", required=True, help="Input text to translate or simplify.")
     parser.add_argument("--max_new_tokens", type=int, default=128)
+    parser.add_argument("--num_beams", type=int, default=1)
+    parser.add_argument(
+        "--use_cache",
+        choices=["on", "off"],
+        default="off",
+        help="Enable decoder KV cache (default off to avoid IndicTrans2 bug).",
+    )
+    parser.add_argument(
+        "--quant",
+        choices=["auto", "off"],
+        default="off",
+        help="Quantization mode: 'auto' tries 4-bit NF4 if bitsandbytes is available.",
+    )
     parser.add_argument("--device", default="auto", help="Device to run on: auto|cpu|cuda")
     return parser.parse_args()
 
@@ -103,56 +76,90 @@ def resolve_device(device_arg: str) -> torch.device:
     return torch.device(device_arg)
 
 
-def load_pipeline(model_dir: Path, device: torch.device):
-    if not model_dir.exists():
-        raise FileNotFoundError(f"Model directory {model_dir} does not exist.")
-    peft_config = PeftConfig.from_pretrained(model_dir)
-    base_model = peft_config.base_model_name_or_path
+def load_model(base: str, adapter: Optional[str], device: torch.device, quant: str) -> AutoModelForSeq2SeqLM:
+    use_4bit = quant == "auto" and device.type == "cuda" and BitsAndBytesConfig is not None and BNB_AVAILABLE
+    if use_4bit:
+        quant_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+        model = AutoModelForSeq2SeqLM.from_pretrained(
+            base,
+            trust_remote_code=True,
+            quantization_config=quant_config,
+            device_map="auto",
+        )
+    else:
+        dtype = torch.float16 if device.type == "cuda" else torch.float32
+        model = AutoModelForSeq2SeqLM.from_pretrained(
+            base,
+            trust_remote_code=True,
+            torch_dtype=dtype,
+        )
+        model.to(device)
 
-    dtype_value = torch.float16 if device.type == "cuda" else torch.float32
-    tokenizer_source = model_dir if (model_dir / "tokenizer_config.json").exists() else base_model
-    tokenizer = _load_tokenizer(
-        tokenizer_source,
-        trust_remote_code=DEFAULT_MODEL_ARGS["trust_remote_code"],
-        use_fast=DEFAULT_MODEL_ARGS["use_fast_tokenizer"],
-    )
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    if adapter:
+        model = PeftModel.from_pretrained(model, adapter, is_trainable=False)
 
-    base_model_obj = _load_model_with_dtype(
-        base_model,
-        dtype_value=dtype_value,
-        trust_remote_code=DEFAULT_MODEL_ARGS["trust_remote_code"],
-    )
-    _maybe_resize_and_tie(
-        base_model_obj,
-        tokenizer,
-        allow_resize=DEFAULT_MODEL_ARGS.get("allow_resize_token_embeddings", False),
-    )
+    base_model = getattr(model, "base_model", model)
+    if hasattr(base_model, "tie_weights"):
+        try:
+            base_model.tie_weights()
+        except Exception:
+            pass
 
-    model = PeftModel.from_pretrained(base_model_obj, model_dir)
-    model.to(device)
     model.eval()
-    return model, tokenizer
+    return model
 
 
 def main() -> None:
     args = parse_args()
+    base = args.base
+    adapter = args.adapter or args.model
+    use_cache = args.use_cache.lower() == "on"
+
     device = resolve_device(args.device)
-    model, tokenizer = load_pipeline(Path(args.model), device)
+    ip = IndicProcessor(inference=True)
 
     src_tag = IT2_TAG.get(args.src_lang.lower(), args.src_lang)
     tgt_tag = IT2_TAG.get(args.tgt_lang.lower(), args.tgt_lang)
-    prompt = f"{src_tag} {tgt_tag} {args.style} {args.simplify} ||| {args.text}"
-    inputs = tokenizer(prompt, return_tensors="pt", padding=True).to(device)
-    with torch.inference_mode():
-        generated = model.generate(**inputs, max_new_tokens=args.max_new_tokens)
-    output_text = tokenizer.batch_decode(generated, skip_special_tokens=True)[0]
 
-    print("=== Prompt ===")
-    print(prompt)
-    print("=== Output ===")
-    print(output_text)
+    print(
+        f"[loader] base={base}, adapter={adapter or 'none'}, quant={args.quant}, "
+        f"beams={args.num_beams}, use_cache={use_cache}, src={src_tag}, tgt={tgt_tag}"
+    )
+
+    tokenizer = AutoTokenizer.from_pretrained(base, trust_remote_code=True, use_fast=False)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    model = load_model(base, adapter, device, args.quant)
+
+    if hasattr(model, "config"):
+        model.config.use_cache = use_cache
+    if hasattr(model, "generation_config"):
+        model.generation_config.use_cache = use_cache
+
+    preprocessed = ip.preprocess_batch([args.text], src_lang=src_tag, tgt_lang=tgt_tag)[0]
+    if adapter is not None and " ||| " in preprocessed:
+        preprocessed = preprocessed.replace(" ||| ", f" {args.style} {args.simplify} ||| ", 1)
+
+    inputs = tokenizer(preprocessed, return_tensors="pt", padding=True, truncation=True).to(device)
+    generation_kwargs = {
+        "max_new_tokens": args.max_new_tokens,
+        "num_beams": args.num_beams,
+        "do_sample": False,
+        "use_cache": use_cache,
+    }
+    with torch.inference_mode():
+        generated = model.generate(**inputs, **generation_kwargs)
+    decoded = tokenizer.batch_decode(
+        generated, skip_special_tokens=True, clean_up_tokenization_spaces=True
+    )
+    decoded = ip.postprocess_batch(decoded, lang=tgt_tag)
+
+    print(decoded[0])
 
 
 if __name__ == "__main__":

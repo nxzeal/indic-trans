@@ -166,6 +166,14 @@ def _build_training_args(cfg: Dict[str, Any], output_dir: Path) -> Seq2SeqTraini
     save_every = train_cfg["save_every"]
     logging_steps = max(50, max(1, eval_every // 5))
 
+    # NEW: respect do_eval + predict_with_generate from YAML
+    do_eval = bool(train_cfg.get("do_eval", True))
+    predict_with_generate = bool(train_cfg.get("predict_with_generate", False))
+
+    # NEW: only schedule eval if do_eval is True
+    evaluation_strategy = "steps" if do_eval else "no"
+    eval_steps = eval_every if do_eval else None
+
     kwargs: Dict[str, Any] = {
         "output_dir": str(output_dir),
         "learning_rate": train_cfg["lr"],
@@ -173,23 +181,26 @@ def _build_training_args(cfg: Dict[str, Any], output_dir: Path) -> Seq2SeqTraini
         "gradient_accumulation_steps": train_cfg["grad_accum"],
         "max_steps": train_cfg["max_steps"],
         "warmup_ratio": train_cfg.get("warmup_ratio", 0.0),
-        "eval_steps": eval_every,
         "save_strategy": "steps",
         "save_steps": save_every,
         "logging_steps": logging_steps,
-        "predict_with_generate": True,
+        "predict_with_generate": predict_with_generate,  # CHANGED (was hardcoded True)
         "fp16": train_cfg.get("fp16", False) and torch.cuda.is_available(),
         "bf16": train_cfg.get("bf16", False) and torch.cuda.is_available(),
         "report_to": ["mlflow"],
         "load_best_model_at_end": False,
         "save_total_limit": train_cfg.get("save_total_limit", 2),
+        # NEW: propagate eval knobs
+        "evaluation_strategy": evaluation_strategy,
+        "eval_steps": eval_steps,
+        "per_device_eval_batch_size": train_cfg.get("per_device_eval_batch_size", 1),
     }
 
+    # Back-compat for older HF arg names
     params = signature(Seq2SeqTrainingArguments.__init__).parameters
-    if "evaluation_strategy" in params:
-        kwargs["evaluation_strategy"] = "steps"
-    elif "eval_strategy" in params:
-        kwargs["eval_strategy"] = "steps"
+    if "evaluation_strategy" not in params and "eval_strategy" in params:
+        kwargs["eval_strategy"] = evaluation_strategy
+        kwargs.pop("evaluation_strategy", None)
 
     return Seq2SeqTrainingArguments(**kwargs)
 
@@ -348,6 +359,10 @@ def train(cfg: Dict[str, Any], config_path: Path) -> None:
         f"save_every={train_cfg['save_every']}, keys={keys_preview}..."
     )
 
+    # NEW: honor do_eval when wiring the trainer and the end-of-run predict
+    do_eval = bool(train_cfg.get("do_eval", True))
+    eval_ds = tokenized["validation"] if do_eval else None
+
     mlflow.set_tracking_uri(f"file://{Path('mlruns').resolve()}")
     mlflow.set_experiment("indictrans-lora")
     run_name = Path(cfg["output_dir"]).name
@@ -361,25 +376,27 @@ def train(cfg: Dict[str, Any], config_path: Path) -> None:
             model=model,
             args=training_args,
             train_dataset=tokenized["train"],
-            eval_dataset=tokenized["validation"],
+            eval_dataset=eval_ds,             # CHANGED: None when do_eval=False
             tokenizer=tokenizer,
             data_collator=collator,
         )
 
         trainer.train()
 
-        eval_output = trainer.predict(tokenized["validation"])
-        predictions = tokenizer.batch_decode(eval_output.predictions, skip_special_tokens=True)
-        preds_path = output_dir / "preds_val.txt"
-        preds_path.write_text("\n".join(predictions), encoding="utf-8")
-        metric_summary = {
-            "eval_loss": float(eval_output.metrics.get("test_loss", eval_output.metrics.get("eval_loss", 0.0))),
-            "samples": int(eval_output.metrics.get("test_num_samples", eval_output.metrics.get("eval_samples", 0))),
-        }
-        write_json(metric_summary, output_dir / "eval_summary.json")
-        mlflow.log_artifact(str(config_path), artifact_path="config")
-        mlflow.log_artifact(str(preds_path), artifact_path="predictions")
-        mlflow.log_artifact(str(output_dir / "eval_summary.json"), artifact_path="metrics")
+        # CHANGED: only run predict if do_eval=True
+        if do_eval:
+            eval_output = trainer.predict(tokenized["validation"])
+            predictions = tokenizer.batch_decode(eval_output.predictions, skip_special_tokens=True)
+            preds_path = output_dir / "preds_val.txt"
+            preds_path.write_text("\n".join(predictions), encoding="utf-8")
+            metric_summary = {
+                "eval_loss": float(eval_output.metrics.get("test_loss", eval_output.metrics.get("eval_loss", 0.0))),
+                "samples": int(eval_output.metrics.get("test_num_samples", eval_output.metrics.get("eval_samples", 0))),
+            }
+            write_json(metric_summary, output_dir / "eval_summary.json")
+            mlflow.log_artifact(str(config_path), artifact_path="config")
+            mlflow.log_artifact(str(preds_path), artifact_path="predictions")
+            mlflow.log_artifact(str(output_dir / "eval_summary.json"), artifact_path="metrics")
 
         trainer.model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
@@ -398,3 +415,4 @@ def main(argv: Iterable[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+

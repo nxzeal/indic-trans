@@ -1,10 +1,12 @@
-base_model: "./models/indictrans2-en-indic-1B"
+base_model: "models/indictrans2-indic-en-1B"
 model_args:
   trust_remote_code: true
-  use_fast_tokenizer: true
+  use_fast_tokenizer: false
+  allow_resize_token_embeddings: false
+  local_files_only: true
 pairs: ["hi-en"]
 data_dir: "data/clean/hi_en"
-output_dir: "outputs/hi_en_r8"
+output_dir: "outputs/hi_en_r8_v2"
 seed: 42
 
 lora:
@@ -13,6 +15,8 @@ lora:
   dropout: 0.05
   target_modules: ["q_proj","v_proj","k_proj","o_proj"]
 
+quant: auto
+
 quantization:
   load_in_4bit: true
   bnb_4bit_use_double_quant: true
@@ -20,13 +24,16 @@ quantization:
   bnb_4bit_compute_dtype: "float16"
 
 train:
-  lr: 1.0e-4
+  lr: 2.0e-4
   batch_size: 4
   grad_accum: 16
-  max_steps: 6000
+  max_steps: 1800
   warmup_ratio: 0.03
-  eval_every: 500
-  save_every: 1000
+  do_eval: false
+  eval_every: 300
+  predict_with_generate: false
+  per_device_eval_batch_size: 1
+  save_every: 600
   gradient_checkpointing: true
   fp16: true
   save_total_limit: 2

@@ -3,11 +3,14 @@
 IndicTrans-LoRA fine-tunes IndicTrans2 checkpoints with QLoRA adapters for controllable style and simplification across Indic?English language pairs. Full scope pairs: hi?en, ta?en, te?en, ml?en. Review-2 shows only hi?en and ta?en while the other pairs stay staged off-line.
 
 ## Project Highlights
-- Base model: i4bharat/indictrans2-en-indic-1B, adapted with PEFT QLoRA (r=16) and bitsandbytes 4-bit quantization when available.
+- Base model: ai4bharat/indictrans2-indic-en-1B, adapted with PEFT QLoRA (r=8) and bitsandbytes 4-bit quantization when available.
 - Task control tags for style (formal/informal) and simplify (yes/no) baked into a prompt template.
 - Deterministic workflows driven by YAML configs under configs/ (training and evaluation).
 - Experiment tracking with MLflow (./mlruns) and artifacts captured under rtifacts/.
 - Demo clients: CLI inference and a lightweight FastAPI web app (only hi?en / ta?en exposed for Review-2).
+
+### Direction Correction
+We initially pulled the en→indic base; project scope requires hi→en. As of 2025-10-06, the repo defaults to ai4bharat/indictrans2-indic-en-1B and the data/training/inference paths have been updated accordingly. Old artifacts are parked under `.trash/`.
 
 ## Setup
 1. Create and activate a virtual environment (Python 3.10+ recommended):
@@ -42,11 +45,10 @@ python scripts/data_prep.py --manifest data/manifests/review2.yaml
 `
 
 ### 2. Train/val/test splits (deterministic seed=42)
-`ash
+`\bash
 python scripts/make_splits.py --pair hi-en --in data/clean/hi_en --out data/clean/hi_en
-python scripts/make_splits.py --pair ta-en --in data/clean/ta_en --out data/clean/ta_en
 `
-(Repeat with 	e-en, ml-en when preparing the full scope.)
+(Repeat with additional pairs when expanding scope.)
 
 ### 2b. Optional control augmentation (teaches informal/simplify toggles)
 `\bash
@@ -55,41 +57,33 @@ python scripts/augment_controls.py \
   --lang_pair hi-en --sample_ratio 0.25 --seed 42 \
   --modes informal,formal,simplify --max_src_len 256 --max_tgt_len 192
 `
-Run the same command with `ta-en` paths to cover Tamil→English before retraining. The script preserves a `train.orig.tsv` backup and patches `train.tsv` in-place.
-
 ### 2c. Repair split direction/pair metadata (if needed)
 `\bash
 python scripts/fix_splits_direction.py --dir data/clean/hi_en --pair hi-en --detect_lang yes --backup yes
-python scripts/fix_splits_direction.py --dir data/clean/ta_en --pair ta-en --detect_lang yes --backup yes
 `
 
 ### 3. QLoRA Training (Review-2 focus pairs)
-`ash
+`\bash
 accelerate launch scripts/train_lora.py --config configs/qlora_hi_en.yaml
-accelerate launch scripts/train_lora.py --config configs/qlora_ta_en.yaml
 `
-Outputs land in outputs/<pair>_r16/ with adapters, tokenizer snapshots, and validation predictions. MLflow logs the run in ./mlruns.
+Outputs land in outputs/hi_en_r8_v2/ with adapters, tokenizer snapshots, and validation predictions. MLflow logs the run in ./mlruns.
 
 ### 4. Evaluation
-`ash
+`\bash
 python scripts/eval_metrics.py --config configs/eval.yaml --pair hi-en \
-  --refs data/clean/hi_en/test.tsv --hyps outputs/hi_en_r16/preds_test.txt \
+  --refs data/clean/hi_en/test.tsv --hyps outputs/hi_en_r8_v2/preds_test.txt \
   --out artifacts/review2/metrics_hi_en.json
-
-python scripts/eval_metrics.py --config configs/eval.yaml --pair ta-en \
-  --refs data/clean/ta_en/test.tsv --hyps outputs/ta_en_r16/preds_test.txt \
-  --out artifacts/review2/metrics_ta_en.json
 `
-Each run writes JSON + TSV metrics and examples_<pair>.tsv under rtifacts/review2/.
+Each run writes JSON + TSV metrics and examples_<pair>.tsv under artifacts/review2/.
 
 ### 5. Quick CLI Inference
-`ash
-python scripts/infer.py --model outputs/hi_en_r16 --src_lang hi --tgt_lang en \
-  --style formal --simplify yes --text "?? ?? ??? ????? ???"
+`\bash
+python scripts/translate_base_ip.py --text "कृपया दरवाज़ा बंद करें।" --src_lang hi --tgt_lang en \
+  --num_beams 4 --use_cache off --quant off
 `
 The script automatically falls back to FP16/CPU when bitsandbytes or CUDA are unavailable.
 
-### 6. FastAPI Demo (70% cut: hi?en, ta?en)
+### 6. FastAPI Demo (Hindi → English)
 `ash
 uvicorn demo.app:app --reload
 `
@@ -109,9 +103,7 @@ Builds a CPU-only image for serving the FastAPI demo; mount outputs/ so adapters
 ## 70% Cut Checklist
 | Scope | Status |
 |-------|--------|
-| hi?en | **Show**  cleaned data, adapter, metrics, demo |
-| ta?en | **Show**  cleaned data, adapter, metrics, demo |
-| te?en | Off-stage  configs ready, data pipeline shared |
-| ml?en | Off-stage  configs ready, data pipeline shared |
+| hi→en | **Show** — cleaned data, adapter, metrics, demo |
+| Other pairs | Off-stage — configs ready, data pipeline shared |
 
-Launch Review-2 using the commands above; keep te?en and ml?en prepared but unpublished until the full review phase.
+Launch Review-2 using the commands above; bring additional language pairs back when the scope expands.
