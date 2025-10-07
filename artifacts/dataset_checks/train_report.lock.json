@@ -1,0 +1,45 @@
+{
+  "train": {
+    "rows": 318800,
+    "null_rows": 0,
+    "pair_hi_en_ratio": 1.0,
+    "style_counts": {
+      "formal": 159443,
+      "informal": 159357
+    },
+    "simplify_counts": {
+      "no": 159488,
+      "yes": 159312
+    },
+    "combo_counts": {
+      "formal|no": 79744,
+      "informal|yes": 79613,
+      "formal|yes": 79699,
+      "informal|no": 79744
+    },
+    "src_mostly_devanagari_ratio": 0.9969,
+    "tgt_mostly_latin_ratio": 0.9983,
+    "src_over_max": 0,
+    "tgt_over_max": 0,
+    "starts_with_Please_ratio": 0.0,
+    "starts_with_CouldYouPlease_ratio": 0.0142,
+    "double_space_ratio": 0.0,
+    "ellipsis_ratio": 0.0033,
+    "html_like_ratio": 0.0006,
+    "exact_duplicate_rows": 0,
+    "contradictions_same_src_same_controls": 0,
+    "informal_req_with_contraction_ratio": 0.0811,
+    "formal_req_without_contraction_ratio": 0.9833,
+    "informal_req_without_please_ratio": 0.9981,
+    "simplify_yes_vs_no_avg_len_ratio": 0.7709,
+    "simplify_marked_entity_lists_count": 12432,
+    "src_overlap_with_val_ratio": 0.0201,
+    "src_overlap_with_test_ratio": 0.0201
+  },
+  "val": {
+    "rows": 1600
+  },
+  "test": {
+    "rows": 1600
+  }
+}
