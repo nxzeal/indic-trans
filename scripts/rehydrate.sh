@@ -1,58 +1,55 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# --- 0) Bootstrap venv & deps ---
-python3 -m venv .venv
-# shellcheck disable=SC1091
-source .venv/bin/activate
+# --- 0) Install runtime dependencies ---
 python -m pip install -U pip
 pip install -r requirements.txt
 pip install -U "huggingface_hub[cli]"
+pip install -U indictranstoolkit
 
-# --- 1) Download base model (local, resumable, no accelerated transfer) ---
+# --- 1) Download base model (Indic → English) ---
 export HF_HUB_ENABLE_HF_TRANSFER=0
 mkdir -p models
-hf download ai4bharat/indictrans2-en-indic-1B \
-  --local-dir models/indictrans2-en-indic-1B \
-  --include model.safetensors \
-  --include config.json tokenizer_config.json special_tokens_map.json generation_config.json \
-  --include tokenization_indictrans.py configuration_indictrans.py modeling_indictrans.py \
-  --include dict.SRC.json dict.TGT.json model.SRC model.TGT
+# (toggle accelerator if needed)
+export HF_HUB_ENABLE_HF_TRANSFER=1
 
-# --- 2) Fetch corpora (adjust max_per_pair to taste) ---
-python scripts/fetch_corpora.py --pairs hi-en ta-en --max_per_pair 80000 --stream yes --export_flores no
+hf download ai4bharat/indictrans2-indic-en-1B \
+  --local-dir models/indictrans2-indic-en-1B \
+  --local-dir-use-symlinks False \
+  --include "model*.safetensors" \
+  --include "pytorch_model*.bin" \
+  --include "model*.index.json" \
+  --include "config.json" \
+  --include "generation_config.json" \
+  --include "tokenizer*.json" \
+  --include "*.model" \
+  --include "special_tokens_map.json" \
+  --include "tokenization_*.py" \
+  --include "configuration_*.py" \
+  --include "modeling_*.py" \
+  --include "*.txt"
 
-# --- 3) Clean & split ---
-python scripts/data_prep.py --manifest data/manifests/review2.yaml
-python scripts/make_splits.py --pair hi-en --in data/clean/hi_en --out data/clean/hi_en --seed 42
-python scripts/make_splits.py --pair ta-en --in data/clean/ta_en --out data/clean/ta_en --seed 42
-
-# --- 4) Repair splits (ensure pair column + direction) ---
-python scripts/fix_splits_direction.py --dir data/clean/hi_en --pair hi-en --detect_lang yes --backup yes
-python scripts/fix_splits_direction.py --dir data/clean/ta_en --pair ta-en --detect_lang yes --backup yes
-
-# --- 5) Augment controls (teach style/simplify on EN targets) ---
-python scripts/augment_controls.py \
-  --in data/clean/hi_en/train.tsv \
-  --out data/clean/hi_en/train_aug.tsv \
-  --lang_pair hi-en \
-  --sample_ratio 0.25 \
-  --seed 42 \
-  --modes informal,formal,simplify \
-  --max_src_len 256 --max_tgt_len 192
-
-python scripts/augment_controls.py \
-  --in data/clean/ta_en/train.tsv \
-  --out data/clean/ta_en/train_aug.tsv \
-  --lang_pair ta-en \
-  --sample_ratio 0.25 \
-  --seed 42 \
-  --modes informal,formal,simplify \
-  --max_src_len 256 --max_tgt_len 192
+# --- 2) Prepare Hindi-English data if absent ---
+if [[ ! -f data/raw/hi_en.tsv ]]; then
+  python scripts/fetch_corpora.py --pairs hi-en --max_per_pair 80000 --stream yes --export_flores no
+  python scripts/data_prep.py --manifest data/manifests/review2.yaml
+  python scripts/make_splits.py --pair hi-en --in data/clean/hi_en --out data/clean/hi_en --seed 42
+  python scripts/augment_controls.py \
+    --in data/clean/hi_en/train.tsv \
+    --out data/clean/hi_en/train_aug.tsv \
+    --lang_pair hi-en \
+    --sample_ratio 0.25 \
+    --seed 42 \
+    --modes informal,formal,simplify \
+    --max_src_len 256 --max_tgt_len 192
+fi
 
 echo
 echo "Rehydrate complete ✅"
 echo "Next steps:"
-echo "  source .venv/bin/activate"
 echo "  export TOKENIZERS_PARALLELISM=false"
 echo "  accelerate launch scripts/train_lora.py --config configs/qlora_hi_en.yaml"
+echo
+echo "Example inference commands:"
+echo "  python scripts/translate_base_ip.py --text \"कृपया दरवाज़ा बंद करें।\" --src_lang hi --tgt_lang en --num_beams 4 --use_cache off --quant off"
+echo "  python scripts/translate_adapter_ip.py --adapter outputs/hi_en_r8_v2/checkpoint-1500 --text \"कृपया दरवाज़ा बंद करें।\" --src_lang hi --tgt_lang en --style informal --simplify yes"

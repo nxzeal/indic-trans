@@ -15,6 +15,7 @@ __pycache__/
 .DS_Store
 Thumbs.db
 desktop.ini
+*.ipynb
 
 # === Logs / temps ===
 *.log
@@ -33,31 +34,32 @@ datasets_cache/
 # === Large models, checkpoints, runs (generated) ===
 models/
 outputs/
-artifacts/
 checkpoints/
 runs/
 wandb/
 mlruns/
+.trash/          # moved old artifacts
 
-# Keep lightweight review artifacts (docs/metrics/images) under artifacts/
+# === Review artifacts ===
+# Ignore all of artifacts/, then re-include only small whitelisted files
+artifacts/**
+!artifacts/**/           # allow walking subdirs
 !artifacts/**/*.md
 !artifacts/**/*.json
 !artifacts/**/*.png
+!artifacts/**/*.txt
 
-# === Data directories (generated) ===
+# === Data directories (auto-generated) ===
 data/raw/
 data/clean/
 data/processed/
 
 # Keep manifests & small structured config/docs inside data/
-!data/manifests/**
+!data/manifests/**       # unignore the whole manifests tree
 !data/**/*.yaml
 !data/**/*.yml
 !data/**/*.json
 !data/**/*.md
-
-# Optional: keep tiny smoke-test samples if present
-!data/sample/**
 
 # === Common big file extensions ===
 *.pt
@@ -68,3 +70,5 @@ data/processed/
 *.gz
 *.csv
 *.tsv
+*.onnx
+*.pb
