@@ -48,6 +48,9 @@ artifacts/**
 !artifacts/**/*.json
 !artifacts/**/*.png
 !artifacts/**/*.txt
+# Explicitly exclude large data files
+artifacts/**/*.tsv
+artifacts/**/*.csv
 
 # === Data directories (auto-generated) ===
 data/raw/

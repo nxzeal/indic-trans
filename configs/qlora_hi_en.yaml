@@ -1,3 +1,7 @@
+# v2: Using special control tokens (<FORMAL>, <INFORMAL>, <SIMPL_Y>, <SIMPL_N>)
+# Training data: data/clean/hi_en/train_v2.tsv (migrate with scripts/migrate_to_control_tokens.py)
+# Tokenizer must have special tokens added (run scripts/add_special_tokens_to_tokenizer.py first)
+
 base_model: "models/indictrans2-indic-en-1B"
 model_args:
   trust_remote_code: true
@@ -6,7 +10,7 @@ model_args:
   local_files_only: true
 pairs: ["hi-en"]
 data_dir: "data/clean/hi_en"
-output_dir: "outputs/hi_en_r8_v2"
+output_dir: "outputs/hi_en_r8_v5"
 seed: 42
 
 lora:
@@ -27,7 +31,7 @@ train:
   lr: 2.0e-4
   batch_size: 4
   grad_accum: 16
-  max_steps: 1800
+  max_steps: 3600
   warmup_ratio: 0.03
   do_eval: false
   eval_every: 300
