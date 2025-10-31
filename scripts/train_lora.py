@@ -129,9 +129,19 @@ def prepare_datasets(cfg: Dict[str, Any]) -> DatasetDict:
         return examples
 
     def load_split(name: str) -> Dataset:
-        path = data_dir / f"{name}.tsv"
-        if not path.exists():
-            raise FileNotFoundError(f"Expected split file {path} to exist.")
+        # Try v2 files first (special token format), fall back to legacy
+        path_v2 = data_dir / f"{name}_v2.tsv"
+        path_legacy = data_dir / f"{name}.tsv"
+
+        if path_v2.exists():
+            path = path_v2
+            print(f"  Loading {name} split from v2 format: {path}")
+        elif path_legacy.exists():
+            path = path_legacy
+            print(f"  Loading {name} split from legacy format: {path}")
+        else:
+            raise FileNotFoundError(f"Expected split file {path_v2} or {path_legacy} to exist.")
+
         rows = [row for row in read_tsv(path)]
         expanded: List[Dict[str, str]] = []
         for row in rows:
@@ -143,7 +153,7 @@ def prepare_datasets(cfg: Dict[str, Any]) -> DatasetDict:
     dataset = DatasetDict()
     dataset["train"] = load_split("train")
     dataset["validation"] = load_split("val")
-    if (data_dir / "test.tsv").exists():
+    if (data_dir / "test_v2.tsv").exists() or (data_dir / "test.tsv").exists():
         dataset["test"] = load_split("test")
     return dataset
 
@@ -214,7 +224,7 @@ def configure_model(cfg: Dict[str, Any]) -> tuple[AutoModelForSeq2SeqLM, AutoTok
     use_fast_tokenizer = bool(model_args.get("use_fast_tokenizer", True))
     allow_resize = bool(model_args.get("allow_resize_token_embeddings", False))
 
-    load_kwargs: Dict[str, Any] = {"device_map": "auto", "trust_remote_code": trust_remote_code}
+    load_kwargs: Dict[str, Any] = {"device_map": {"": 0}, "trust_remote_code": trust_remote_code, "low_cpu_mem_usage": True}
     dtype_value = None
     use_4bit = quant_cfg.get("load_in_4bit", False)
     if use_4bit:
@@ -273,6 +283,17 @@ def configure_model(cfg: Dict[str, Any]) -> tuple[AutoModelForSeq2SeqLM, AutoTok
         else:
             raise
 
+    devmap = getattr(model, "hf_device_map", None)
+    if devmap:
+        print("[loader] device_map:", set(devmap.values()))
+    else:
+        # Fallback: show the device of the first parameter
+        try:
+            any_param = next(model.parameters())
+            print("[loader] device:", any_param.device)
+        except StopIteration:
+            print("[loader] device: <no params>")
+    # -------------------------------------------------------
     embedding_layer = None
     try:
         embedding_layer = model.get_input_embeddings()
