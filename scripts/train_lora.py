@@ -402,7 +402,17 @@ def train(cfg: Dict[str, Any], config_path: Path) -> None:
             data_collator=collator,
         )
 
-        trainer.train()
+        # Auto-resume from last checkpoint if exists
+        last_checkpoint = None
+        if output_dir.exists():
+            checkpoints = [d for d in output_dir.iterdir() if d.is_dir() and d.name.startswith("checkpoint-")]
+            if checkpoints:
+                # Sort by step number
+                checkpoints.sort(key=lambda x: int(x.name.split("-")[-1]))
+                last_checkpoint = checkpoints[-1]
+                print(f"[trainer] Resuming from checkpoint: {last_checkpoint}")
+
+        trainer.train(resume_from_checkpoint=last_checkpoint)
 
         # CHANGED: only run predict if do_eval=True
         if do_eval:
