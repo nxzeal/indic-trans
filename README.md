@@ -67,7 +67,7 @@ python scripts/translate_adapter_ip.py \
 
 ```bash
 # Base model only (no adapter)
-python scripts/archive/translate_base_ip.py \
+python scripts/translate_base_ip.py \
   --base models/indictrans2-indic-en-1B \
   --src hi --tgt en \
   --num_beams 4 \
@@ -226,7 +226,7 @@ python scripts/eval_control_adherence.py \
 
 ```bash
 # Results in artifacts/bleu_retention/
-python scripts/archive/translate_base_ip.py --file artifacts/review2/val50.src > base_output.txt
+python scripts/translate_base_ip.py --file artifacts/review2/val50.src > base_output.txt
 python scripts/translate_adapter_ip.py --file artifacts/review2/val50.src > adapter_output.txt
 # Compare with sacrebleu
 ```
