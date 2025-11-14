@@ -2,13 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>IndicTrans LoRA Demo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
   <main>
-    <h1>IndicTrans LoRA Demo</h1>
-    <p class="tagline">Focused Review-2 demo — Hindi→English adapter</p>
+    <h1>IndicTrans LoRA</h1>
+    <p class="tagline">Style Aware Translator</p>
     {% if error %}
       <div class="alert alert-error">{{ error }}</div>
     {% endif %}
@@ -36,32 +40,60 @@
             <option value="yes" {% if selected_simplify == 'yes' %}selected{% endif %}>Yes</option>
           </select>
         </div>
-        <div class="field">
-          <label for="max_new_tokens">Max output tokens</label>
-          <input type="number" id="max_new_tokens" name="max_new_tokens" value="{{ max_new_tokens or 128 }}" min="16" max="512" />
-        </div>
       </div>
       <div class="field">
         <label for="text">Input text</label>
-        <textarea id="text" name="text" rows="6" placeholder="Enter text to translate or simplify">{{ input_text or '' }}</textarea>
+        <textarea id="text" name="text" rows="2" placeholder="Enter Hindi text to translate">{{ input_text or '' }}</textarea>
       </div>
-      <button type="submit">Generate</button>
+      <button type="submit">Translate</button>
     </form>
 
     {% if result %}
-      <section class="result">
-        <h2>Output</h2>
-        <p><strong>Pair:</strong> {{ result.pair }} &nbsp; <strong>Style:</strong> {{ result.style }} &nbsp; <strong>Simplify:</strong> {{ result.simplify }}</p>
-        <div class="prompt">
-          <h3>Prompt</h3>
-          <pre>{{ result.prompt }}</pre>
+      <section class="result" id="result">
+        <div class="result-icon">
+          <svg width="44" height="44" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="iconGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style="stop-color:#667eea"/>
+                <stop offset="100%" style="stop-color:#764ba2"/>
+              </linearGradient>
+            </defs>
+            <!-- Globe/Circle -->
+            <circle cx="12" cy="12" r="9" stroke="url(#iconGradient)" stroke-width="2"/>
+            <!-- Horizontal line through globe (equator) -->
+            <path d="M3 12h18" stroke="url(#iconGradient)" stroke-width="1.5"/>
+            <!-- Center longitude -->
+            <ellipse cx="12" cy="12" rx="5.5" ry="9" stroke="url(#iconGradient)" stroke-width="1.5" fill="none"/>
+            <!-- Left longitude -->
+            <path d="M6 3.5c-1.5 2-2.5 5.5-2.5 8.5s1 6.5 2.5 8.5" stroke="url(#iconGradient)" stroke-width="1.5" fill="none"/>
+            <!-- Right longitude -->
+            <path d="M18 3.5c1.5 2 2.5 5.5 2.5 8.5s-1 6.5-2.5 8.5" stroke="url(#iconGradient)" stroke-width="1.5" fill="none"/>
+          </svg>
         </div>
-        <div class="generated">
-          <h3>Generation</h3>
+        <h2>Translation Result</h2>
+        <div class="result-meta-tags">
+          <span class="meta-tag">{{ result.style|title }}</span>
+          {% if result.simplify == 'yes' %}
+            <span class="meta-tag">Simplified</span>
+          {% endif %}
+        </div>
+        <div class="output">
           <pre>{{ result.generated }}</pre>
         </div>
       </section>
     {% endif %}
   </main>
+
+  {% if result %}
+  <script>
+    // Auto-scroll to result with smooth animation
+    setTimeout(function() {
+      document.getElementById('result').scrollIntoView({
+        behavior: 'smooth',
+        block: 'center'
+      });
+    }, 300);
+  </script>
+  {% endif %}
 </body>
 </html>

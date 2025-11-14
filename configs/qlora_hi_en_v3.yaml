@@ -1,6 +1,7 @@
-# v2: Using special control tokens (<FORMAL>, <INFORMAL>, <SIMPL_Y>, <SIMPL_N>)
-# Training data: data/clean/hi_en/train_v2.tsv (migrate with scripts/migrate_to_control_tokens.py)
-# Tokenizer must have special tokens added (run scripts/add_special_tokens_to_tokenizer.py first)
+# v3: VOCABULARY TOKEN CONTROLS - Single-token approach
+# Training with vocab-native control tokens (formal, casual, simple, detailed)
+# This replaces the failed multi-token special token approach from v2
+# Training data: data/clean/hi_en/train_v3.tsv
 
 base_model: "models/indictrans2-indic-en-1B"
 model_args:
@@ -8,9 +9,10 @@ model_args:
   use_fast_tokenizer: false
   allow_resize_token_embeddings: false
   local_files_only: true
+
 pairs: ["hi-en"]
 data_dir: "data/clean/hi_en"
-output_dir: "outputs/hi_en_r8_v5"
+output_dir: "outputs/hi_en_r8_v3"  # Fresh directory for v3 training
 seed: 42
 
 lora:
@@ -31,22 +33,21 @@ train:
   lr: 2.0e-4
   batch_size: 4
   grad_accum: 16
-  max_steps: 3600
+  max_steps: 10000           # ~2 epochs for strong control learning
   warmup_ratio: 0.03
   do_eval: false
-  eval_every: 300
+  eval_every: 500
   predict_with_generate: false
   per_device_eval_batch_size: 1
-  save_every: 600
+  save_every: 1000           # Checkpoints at 1k, 2k, 3k, etc.
   gradient_checkpointing: true
   fp16: true
-  save_total_limit: 2
+  save_total_limit: 2        # Keep last 3 checkpoints
 
 task:
   max_src_len: 256
   max_tgt_len: 192
   tags:
-    style: ["formal","informal"]
-    simplify: ["yes","no"]
+    style: ["formal","casual"]       # v3: vocab-native single tokens
+    simplify: ["simple","detailed"]  # v3: vocab-native single tokens
   prompt_template: "<SRC_LANG> <TGT_LANG> <STYLE> <SIMPLIFY> ||| <TEXT>"
-  

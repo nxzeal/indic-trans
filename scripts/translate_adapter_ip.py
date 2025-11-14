@@ -104,18 +104,33 @@ def _formalize(en: str) -> str:
     # expand contractions to sound formal
     for c, full in {v:k for k,v in _CONTRACTIONS.items()}.items():
         s = re.sub(rf"\b{re.escape(c)}\b", full, s, flags=re.IGNORECASE)
+    # use formal vocabulary
+    s = _formalize_vocab(s)
     if _looks_like_request(s):
+        # Remove "please" from start and end first to avoid duplicates
+        s = re.sub(r"^[Pp]lease\s+", "", s)
+        s = re.sub(r"\s+[Pp]lease[.,!?]*$", "", s)  # remove trailing please with optional punctuation
+
         s = re.sub(r"^(can|could|will|would)\s+you\s+", "Could you please ", s, flags=re.IGNORECASE)
-        s = re.sub(r"^[Pp]lease\s+", "", s)  # avoid "please please"
         if not s.lower().startswith("could you please "):
             s = "Could you please " + s.lstrip()
-        # lower-case the verb after "please" (e.g., "Turn" -> "turn")
-        s = re.sub(r"(Could you please )([A-Z])", lambda m: m.group(1)+m.group(2).lower(), s)
+
+        # Clean up any remaining duplicate "please"
+        s = re.sub(r"\bplease\s+please\b", "please", s, flags=re.IGNORECASE)
+
+        # lower-case the first word after "please" (e.g., "Turn" -> "turn", "CLOSE" -> "close", "Close" -> "close")
+        s = re.sub(r"(Could you please )([A-Za-z]+)", lambda m: m.group(1) + m.group(2).lower(), s, count=1)
         s = re.sub(r"\s{2,}", " ", s).strip()
         if s and s[-1] not in ".!?": s += "."
     # capitalize sentence start if it begins lower
     if s and s[0].islower():
         s = s[0].upper() + s[1:]
+
+    # capitalize after sentence boundaries (., !, ?)
+    def capitalize_after_period(m):
+        return m.group(1) + m.group(2).upper()
+    s = re.sub(r'([.!?]\s+)([a-z])', capitalize_after_period, s)
+
     return s
 
 
@@ -125,34 +140,133 @@ def _informalize(en: str) -> str:
     s = re.sub(r"\b[Pp]lease\b[, ]*", "", s)
     # soften formal scaffold
     s = re.sub(r"\bCould you please\s+", "Can you ", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bWould you please\s+", "Can you ", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bCould you\s+", "Can you ", s, flags=re.IGNORECASE)
+    # use casual vocabulary
+    s = _casualize_vocab(s)
+    # add contractions
     s = _make_contractions(s)
     s = re.sub(r"\s{2,}", " ", s).strip()
+    # clean up spacing before punctuation (e.g., "word ." → "word.")
+    s = re.sub(r'\s+([.,!?])', r'\1', s)
+    # capitalize first letter
+    if s and s[0].islower():
+        s = s[0].upper() + s[1:]
+    # capitalize after sentence boundaries
+    def capitalize_after_period(m):
+        return m.group(1) + m.group(2).upper()
+    s = re.sub(r'([.!?]\s+)([a-z])', capitalize_after_period, s)
     return s
 
+
+_FORMAL_TO_CASUAL = {
+    r'\bhowever\b': 'but', r'\btherefore\b': 'so', r'\bconsequently\b': 'so',
+    r'\bfurthermore\b': 'also', r'\bmoreover\b': 'also', r'\bnevertheless\b': 'but',
+    r'\badditionally\b': 'also', r'\bthus\b': 'so', r'\bhence\b': 'so',
+}
+
+_CASUAL_TO_FORMAL = {
+    r'\bbut\b': 'however', r'\bso\b': 'therefore', r'\balso\b': 'furthermore',
+    r'\bokay\b': 'very well', r'\bok\b': 'very well', r'\bguys\b': 'everyone',
+}
+
+def _formalize_vocab(s: str) -> str:
+    t = s
+    for casual_pattern, formal_word in _CASUAL_TO_FORMAL.items():
+        t = re.sub(casual_pattern, formal_word, t, flags=re.IGNORECASE)
+    return t
+
+def _casualize_vocab(s: str) -> str:
+    t = s
+    for formal_pattern, casual_word in _FORMAL_TO_CASUAL.items():
+        t = re.sub(formal_pattern, casual_word, t, flags=re.IGNORECASE)
+    return t
 
 _EASY_REPL = {
     "approximately":"about","purchase":"buy","assistance":"help","commence":"start",
     "terminate":"end","endeavor":"try","inform":"tell","obtain":"get","require":"need",
     "inquire":"ask","therefore":"so","however":"but","consequently":"so","nevertheless":"but",
-    "ensure":"make sure","indicate":"show","regarding":"about",
+    "ensure":"make sure","indicate":"show","regarding":"about","utilize":"use",
+    "demonstrate":"show","numerous":"many","substantial":"large","sufficient":"enough",
+    "additional":"more","implement":"do","facilitate":"help","comprehensive":"full",
 }
+
 def _simplify_yes(en: str) -> str:
-    # no aggressive edits for very short lines
-    if len(en.split()) < 8: 
-        return en
-    s = re.sub(r"\s*\([^)]*\)", "", en)  # drop parentheticals
-    # trim to first main clause if long
-    if len(s.split()) >= 14:
-        s = re.split(r"[;:—–]|, and |, but ", s)[0]
-    # easy vocab
+    """COMPREHENSIVE sentence simplification with restructuring."""
+    s = en
+
+    # Always apply these simplifications regardless of length:
+
+    # 1. Remove parenthetical explanations
+    s = re.sub(r'\s*\([^)]*\)', '', s)
+    s = re.sub(r'\s*\[[^\]]*\]', '', s)
+
+    # 2. Remove intensifiers and hedging (always helpful for simplicity)
+    for modifier in [r'\bvery\s+', r'\breally\s+', r'\bquite\s+', r'\bextremely\s+',
+                     r'\bparticularly\s+', r'\bespecially\s+', r'\bsignificantly\s+',
+                     r'\bhighly\s+', r'\bexceptionally\s+', r'\bremarkably\s+',
+                     r'\bsomewhat\s+', r'\brather\s+', r'\bfairly\s+']:
+        s = re.sub(modifier, '', s, flags=re.IGNORECASE)
+
+    # 3. Replace complex vocabulary with simple alternatives (always)
     def repl(m):
-        w = m.group(0); lw = w.lower()
+        w = m.group(0)
+        lw = w.lower()
         rep = _EASY_REPL.get(lw)
-        if not rep: return w
-        return rep[0].upper()+rep[1:] if w and w[0].isupper() else rep
-    s = re.sub(r"[A-Za-z']+", repl, s)
-    s = re.sub(r"\s{2,}", " ", s).strip()
-    if s and s[-1] not in ".!?": s += "."
+        if not rep:
+            return w
+        return rep[0].upper() + rep[1:] if w and w[0].isupper() else rep
+    s = re.sub(r'\b[A-Za-z]+\b', repl, s)
+
+    # 4. Simplify common conjunctions and transitions (always)
+    s = re.sub(r'\b(?:in order|so as) to\b', 'to', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bin the event that\b', 'if', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bdue to the fact that\b', 'because', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bin spite of the fact that\b', 'although', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bfor the purpose of\b', 'to', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bprior to\b', 'before', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bsubsequent to\b', 'after', s, flags=re.IGNORECASE)
+
+    # Only apply complex restructuring for longer sentences:
+    if len(s.split()) >= 8:
+        # 5. Remove relative clauses (which/who/that introduce complexity)
+        s = re.sub(r',\s*who\s+[^,]+,', ',', s)
+        s = re.sub(r',\s*which\s+[^,]+,', ',', s)
+
+        # 6. Convert passive to active voice patterns
+        s = re.sub(r'\bwas\s+(\w+ed)\s+by\b', r'\1 by', s)
+        s = re.sub(r'\bwere\s+(\w+ed)\s+by\b', r'\1 by', s)
+
+        # 7. Break compound sentences - take main clause
+        if len(s.split()) >= 14:
+            parts = re.split(r'[;:]|,\s+(?:and|but|or|however|although|while|because)\s+', s)
+            if len(parts) > 1:
+                s = max(parts, key=len)  # Take longest clause (usually main)
+
+    # 8. Remove redundant phrases
+    s = re.sub(r'\bin my opinion,?\s*', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bit should be noted that\s*', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bit is important to note that\s*', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bas a matter of fact,?\s*', '', s, flags=re.IGNORECASE)
+
+    # 9. Simplify time/date expressions
+    s = re.sub(r'\bat the present time\b', 'now', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bat this point in time\b', 'now', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bin the near future\b', 'soon', s, flags=re.IGNORECASE)
+
+    # 10. Clean up spacing and punctuation
+    s = re.sub(r'\s{2,}', ' ', s).strip()
+    s = re.sub(r',\s*,', ',', s)
+    s = re.sub(r'\s+([.,!?])', r'\1', s)
+
+    # 11. Ensure proper sentence ending
+    if s and s[-1] not in '.!?':
+        s += '.'
+
+    # 12. Capitalize first letter
+    if s and s[0].islower():
+        s = s[0].upper() + s[1:]
+
     return s
 
 def _apply_controls(en: str, style: str, simplify: str) -> str:

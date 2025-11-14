@@ -66,11 +66,44 @@ _CONTRACTIONS = {
     "would not":"wouldn't","should not":"shouldn't","could not":"couldn't","have not":"haven't",
     "has not":"hasn't","had not":"hadn't","it is":"it's","that is":"that's","there is":"there's",
     "there are":"there're","i am":"i'm","we will":"we'll","you will":"you'll","they will":"they'll",
+    "he is":"he's","she is":"she's","we are":"we're","they are":"they're","i have":"i've",
+    "we have":"we've","they have":"they've","i would":"i'd","you would":"you'd","he would":"he'd",
+    "she would":"she'd","we would":"we'd","they would":"they'd","let us":"let's",
 }
+
+_FORMAL_TO_CASUAL = {
+    r'\bhowever\b': 'but', r'\btherefore\b': 'so', r'\bconsequently\b': 'so',
+    r'\bfurthermore\b': 'also', r'\bmoreover\b': 'also', r'\bnevertheless\b': 'but',
+    r'\badditionally\b': 'also', r'\bthus\b': 'so', r'\bhence\b': 'so',
+}
+
+_CASUAL_TO_FORMAL = {
+    r'\bbut\b': 'however', r'\bso\b': 'therefore', r'\balso\b': 'furthermore',
+    r'\bokay\b': 'very well', r'\bok\b': 'very well', r'\bguys\b': 'everyone',
+}
+
 def _make_contractions(s: str) -> str:
     t = s
     for full, c in _CONTRACTIONS.items():
         t = re.sub(rf"\b{re.escape(full)}\b", c, t, flags=re.IGNORECASE)
+    return t
+
+def _expand_contractions(s: str) -> str:
+    t = s
+    for full, c in _CONTRACTIONS.items():
+        t = re.sub(rf"\b{re.escape(c)}\b", full, t, flags=re.IGNORECASE)
+    return t
+
+def _formalize_vocab(s: str) -> str:
+    t = s
+    for casual_pattern, formal_word in _CASUAL_TO_FORMAL.items():
+        t = re.sub(casual_pattern, formal_word, t, flags=re.IGNORECASE)
+    return t
+
+def _casualize_vocab(s: str) -> str:
+    t = s
+    for formal_pattern, casual_word in _FORMAL_TO_CASUAL.items():
+        t = re.sub(formal_pattern, casual_word, t, flags=re.IGNORECASE)
     return t
 
 def _looks_like_request(en: str) -> bool:
@@ -88,8 +121,9 @@ def _looks_like_request(en: str) -> bool:
 def _formalize(en: str) -> str:
     s = en
     # expand contractions for a formal tone
-    for c, full in {v:k for k,v in _CONTRACTIONS.items()}.items():
-        s = re.sub(rf"\b{re.escape(c)}\b", full, s, flags=re.IGNORECASE)
+    s = _expand_contractions(s)
+    # use formal vocabulary
+    s = _formalize_vocab(s)
     if _looks_like_request(s):
         s = re.sub(r"^(can|could|will|would)\s+you\s+", "Could you please ", s, flags=re.IGNORECASE)
         s = re.sub(r"^[Pp]lease\s+", "", s)  # avoid double please
@@ -110,6 +144,9 @@ def _informalize(en: str) -> str:
     s = re.sub(r"\b[Pp]lease\b[, ]*", "", s)
     # soften formal scaffold
     s = re.sub(r"\bCould you please\s+", "Can you ", s, flags=re.IGNORECASE)
+    # use casual vocabulary
+    s = _casualize_vocab(s)
+    # add contractions
     s = _make_contractions(s)
     s = re.sub(r"\s{2,}", " ", s).strip()
     return s
@@ -118,22 +155,90 @@ _EASY_REPL = {
     "approximately":"about","purchase":"buy","assistance":"help","commence":"start",
     "terminate":"end","endeavor":"try","inform":"tell","obtain":"get","require":"need",
     "inquire":"ask","therefore":"so","however":"but","consequently":"so","nevertheless":"but",
-    "ensure":"make sure","indicate":"show","regarding":"about",
+    "ensure":"make sure","indicate":"show","regarding":"about","utilize":"use",
+    "demonstrate":"show","numerous":"many","substantial":"large","sufficient":"enough",
+    "additional":"more","implement":"do","facilitate":"help","comprehensive":"full",
 }
 def _simplify_yes(en: str) -> str:
+    """COMPREHENSIVE sentence simplification with restructuring."""
     if len(en.split()) < 8:
         return en
-    s = re.sub(r"\s*\([^)]*\)", "", en)
+
+    s = en
+
+    # 1. Remove parenthetical explanations
+    s = re.sub(r'\s*\([^)]*\)', '', s)
+    s = re.sub(r'\s*\[[^\]]*\]', '', s)
+
+    # 2. Remove relative clauses (which/who/that introduce complexity)
+    # "The man who was walking" -> "The man walking" OR just "The man"
+    s = re.sub(r',\s*who\s+[^,]+,', ',', s)
+    s = re.sub(r',\s*which\s+[^,]+,', ',', s)
+
+    # 3. Convert passive to active voice patterns
+    # "was given by" -> "received from" or remove
+    s = re.sub(r'\bwas\s+(\w+ed)\s+by\b', r'\1 by', s)
+    s = re.sub(r'\bwere\s+(\w+ed)\s+by\b', r'\1 by', s)
+
+    # 4. Remove intensifiers and hedging
+    for modifier in [r'\bvery\s+', r'\breally\s+', r'\bquite\s+', r'\bextremely\s+',
+                     r'\bparticularly\s+', r'\bespecially\s+', r'\bsignificantly\s+',
+                     r'\bhighly\s+', r'\bexceptionally\s+', r'\bremarkably\s+',
+                     r'\bsomewhat\s+', r'\brather\s+', r'\bfairly\s+']:
+        s = re.sub(modifier, '', s, flags=re.IGNORECASE)
+
+    # 5. Simplify conjunctions and transitions
+    s = re.sub(r'\b(?:in order|so as) to\b', 'to', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bin the event that\b', 'if', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bdue to the fact that\b', 'because', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bin spite of the fact that\b', 'although', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bfor the purpose of\b', 'to', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bprior to\b', 'before', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bsubsequent to\b', 'after', s, flags=re.IGNORECASE)
+
+    # 6. Break compound sentences - take main clause
     if len(s.split()) >= 14:
-        s = re.split(r"[;:—–]|, and |, but ", s)[0]
+        # Split on major punctuation or conjunctions
+        parts = re.split(r'[;:]|,\s+(?:and|but|or|however|although|while|because)\s+', s)
+        if len(parts) > 1:
+            # Take the longest clause (usually the main one)
+            s = max(parts, key=len)
+
+    # 7. Replace complex vocabulary with simple alternatives
     def repl(m):
-        w = m.group(0); lw = w.lower()
+        w = m.group(0)
+        lw = w.lower()
         rep = _EASY_REPL.get(lw)
-        if not rep: return w
-        return rep[0].upper()+rep[1:] if w and w[0].isupper() else rep
-    s = re.sub(r"[A-Za-z']+", repl, s)
-    s = re.sub(r"\s{2,}", " ", s).strip()
-    if s and s[-1] not in ".!?": s += "."
+        if not rep:
+            return w
+        # Preserve capitalization
+        return rep[0].upper() + rep[1:] if w and w[0].isupper() else rep
+    s = re.sub(r'\b[A-Za-z]+\b', repl, s)
+
+    # 8. Remove redundant phrases
+    s = re.sub(r'\bin my opinion,?\s*', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bit should be noted that\s*', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bit is important to note that\s*', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bas a matter of fact,?\s*', '', s, flags=re.IGNORECASE)
+
+    # 9. Simplify time/date expressions
+    s = re.sub(r'\bat the present time\b', 'now', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bat this point in time\b', 'now', s, flags=re.IGNORECASE)
+    s = re.sub(r'\bin the near future\b', 'soon', s, flags=re.IGNORECASE)
+
+    # 10. Clean up spacing and punctuation
+    s = re.sub(r'\s{2,}', ' ', s).strip()
+    s = re.sub(r',\s*,', ',', s)  # Remove double commas
+    s = re.sub(r'\s+([.,!?])', r'\1', s)  # Fix spacing before punctuation
+
+    # 11. Ensure proper sentence ending
+    if s and s[-1] not in '.!?':
+        s += '.'
+
+    # 12. Capitalize first letter
+    if s and s[0].islower():
+        s = s[0].upper() + s[1:]
+
     return s
 
 def enforce_controls(out_text: str, style: str, simplify: str) -> str:
@@ -185,11 +290,8 @@ async def infer(
             pre = ip.preprocess_batch([text], src_lang=src_tag, tgt_lang=tgt_tag)[0]
 
             # insert controls only if an adapter is active (keeps base behavior clean)
-            # Using special token format: <FORMAL>/<INFORMAL>, <SIMPL_Y>/<SIMPL_N>
             if ADAPTER_DIR and " ||| " in pre:
-                style_token = f"<{style.upper()}>"
-                simplify_token = f"<SIMPL_{simplify.upper()}>"
-                pre = pre.replace(" ||| ", f" {style_token} {simplify_token} ||| ", 1)
+                pre = pre.replace(" ||| ", f" {style} {simplify} ||| ", 1)
 
             enc = tokenizer(pre, return_tensors="pt", padding=True, truncation=True).to(_device)
 

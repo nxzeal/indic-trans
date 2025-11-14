@@ -13,6 +13,7 @@ from transformers import (
     DataCollatorForSeq2Seq,
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
+    TrainerCallback,
 )
 
 try:
@@ -41,6 +42,24 @@ IT2_TAG = {
     "te": "tel_Telu",
     "ml": "mal_Mlym",
 }
+
+
+class CheckpointCleanupCallback(TrainerCallback):
+    """
+    Removes optimizer.pt, scheduler.pt, scaler.pt, and rng_state.pth after checkpoint save.
+    This prevents torch version errors (CVE-2025-32434) when resuming with PyTorch < 2.6.
+    """
+    def on_save(self, args, state, control, **kwargs):
+        """Called after a checkpoint is saved."""
+        if state.global_step > 0 and state.global_step % args.save_steps == 0:
+            checkpoint_dir = Path(args.output_dir) / f"checkpoint-{state.global_step}"
+            if checkpoint_dir.exists():
+                files_to_remove = ["optimizer.pt", "scheduler.pt", "scaler.pt", "rng_state.pth"]
+                for filename in files_to_remove:
+                    filepath = checkpoint_dir / filename
+                    if filepath.exists():
+                        filepath.unlink()
+                print(f"[checkpoint-cleanup] Removed .pt files from {checkpoint_dir.name}")
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a QLoRA adapter on IndicTrans data.")
@@ -129,18 +148,22 @@ def prepare_datasets(cfg: Dict[str, Any]) -> DatasetDict:
         return examples
 
     def load_split(name: str) -> Dataset:
-        # Try v2 files first (special token format), fall back to legacy
+        # Try v3 files first (vocab tokens), fall back to v2 (special tokens), then legacy
+        path_v3 = data_dir / f"{name}_v3.tsv"
         path_v2 = data_dir / f"{name}_v2.tsv"
         path_legacy = data_dir / f"{name}.tsv"
 
-        if path_v2.exists():
+        if path_v3.exists():
+            path = path_v3
+            print(f"  Loading {name} split from v3 format (vocab tokens): {path}")
+        elif path_v2.exists():
             path = path_v2
-            print(f"  Loading {name} split from v2 format: {path}")
+            print(f"  Loading {name} split from v2 format (special tokens): {path}")
         elif path_legacy.exists():
             path = path_legacy
             print(f"  Loading {name} split from legacy format: {path}")
         else:
-            raise FileNotFoundError(f"Expected split file {path_v2} or {path_legacy} to exist.")
+            raise FileNotFoundError(f"Expected split file {path_v3}, {path_v2}, or {path_legacy} to exist.")
 
         rows = [row for row in read_tsv(path)]
         expanded: List[Dict[str, str]] = []
@@ -153,7 +176,7 @@ def prepare_datasets(cfg: Dict[str, Any]) -> DatasetDict:
     dataset = DatasetDict()
     dataset["train"] = load_split("train")
     dataset["validation"] = load_split("val")
-    if (data_dir / "test_v2.tsv").exists() or (data_dir / "test.tsv").exists():
+    if (data_dir / "test_v3.tsv").exists() or (data_dir / "test_v2.tsv").exists() or (data_dir / "test.tsv").exists():
         dataset["test"] = load_split("test")
     return dataset
 
@@ -400,6 +423,7 @@ def train(cfg: Dict[str, Any], config_path: Path) -> None:
             eval_dataset=eval_ds,             # CHANGED: None when do_eval=False
             tokenizer=tokenizer,
             data_collator=collator,
+            callbacks=[CheckpointCleanupCallback()],  # Auto-cleanup .pt files
         )
 
         # Auto-resume from last checkpoint if exists
